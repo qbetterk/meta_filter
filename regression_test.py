@@ -86,7 +86,7 @@ class network:
         self.output = sigmoid(np.dot(self.hid_layer, self.w2))
         self.loss = sum((self.output - self.oracle) ** 2)
         
-        return self.loss
+        return [self.loss, self.output]
 
 
 model = network()
@@ -95,8 +95,10 @@ for i in range(500):
         model.train(train_x[j], train_y[0][j])
 
     if i %10 == 0:
-        loss = sum([model.test(test_x[j], test_y[0][j]) for j in range(test_num)])
+        loss = sum([model.test(test_x[j], test_y[0][j])[0] for j in range(test_num)])
         print(loss)
+
+
 
 
 
