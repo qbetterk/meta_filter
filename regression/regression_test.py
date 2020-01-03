@@ -41,7 +41,7 @@ val_num = 100
 val_x   = np.array([np.random.uniform(-5.0, 5.0) for _ in range(val_num)], dtype=np.float32).reshape(-1,1)
 val_y   = np.array([[d_sour_a[j] * np.sin(i + d_sour_b[j]) for i in val_x] for j in range(d_sour_num)], dtype=np.float32).reshape(d_sour_num, val_num, 1)
 
-support_num = 10
+support_num = 3
 support_x   = np.array([np.random.uniform(-5.0, 5.0) for _ in range(support_num)], dtype=np.float32).reshape(-1,1)
 support_y   = np.array([[d_targ_a[j] * np.sin(i + d_targ_b[j]) for i in support_x] for j in range(d_targ_num)], dtype=np.float32).reshape(d_targ_num, support_num, 1)
 
@@ -205,7 +205,7 @@ class Regression():
         self.epoch_num = 50001
         self.val_num = 500
         self.batch_size = 20
-        self.sample_num = 10
+        self.sample_num = 3
         self.domain_num = 15
 
         self.model = reg_net()
@@ -334,6 +334,9 @@ class Regression():
         torch.save(self.model.state_dict(), './model/transfer.pkl')
 
     def train_maml(self):
+        if not os.path.exists(self.model_dir):
+            os.makedirs(self.model_dir)
+
         ################## train #####################
         for epoch in range(self.epoch_num):
             sample_idx = np.random.choice(train_num, self.sample_num)
@@ -533,6 +536,9 @@ class Regression():
                 # self.plot(outputs, os.path.join(output_sub_dir, file_name))
 
     def train_filter(self):
+        if not os.path.exists(self.model_dir):
+            os.makedirs(self.model_dir)
+
         #################### initialize the filter ###########################
         self.filter = reg_net()
         if torch.cuda.is_available():
@@ -650,16 +656,18 @@ def main():
     # reg.train_transfer()
     # reg.test_adapt(model_path = './model/transfer.pkl')
     # reg.test(model_path = './model/transfer.pkl')
-    # reg.train_maml()
+
     # reg.model_dir = './model/maml/detail'
+    # reg.model_dir = './model/maml/N3_detail'
+    # reg.train_maml()
     # for model_name in [f for f in os.listdir(reg.model_dir) if os.path.isfile(os.path.join(reg.model_dir, f))]:
     #     reg.test_adapt(model_path = os.path.join(reg.model_dir, model_name), output_dir = './result_pic/maml/')
     # reg.test_adapt()
 
-    # reg.train_filter()
-    reg.model_dir = './model/filter/detail3'
-    for model_name in [f for f in os.listdir(reg.model_dir) if os.path.isfile(os.path.join(reg.model_dir, f))]:
-        reg.test_filter(model_path = os.path.join(reg.model_dir, model_name), output_dir = './result_pic/filter/')
+    reg.model_dir = './model/filter/N3_detail'
+    reg.train_filter()
+    # for model_name in [f for f in os.listdir(reg.model_dir) if os.path.isfile(os.path.join(reg.model_dir, f))]:
+    #     reg.test_filter(model_path = os.path.join(reg.model_dir, model_name), output_dir = './result_pic/filter/')
 
 
 if __name__ == "__main__":
