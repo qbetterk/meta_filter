@@ -30,13 +30,20 @@ class _Config:
         self.vocab_path_train = './data/multi-woz-processed/vocab'
         self.vocab_path_eval = None
         self.data_path = './data/multi-woz-processed/'
-        self.data_file = ['data_in_domain_' + domain + '.json' for domain in ['train',
-                                                                            'taxi',
-                                                                            'restaurant',
-                                                                            'attraction',
-                                                                            'hospital',
-                                                                            'hotel',
-                                                                            'police']]
+
+        self.source_domain = [
+                            'train',
+                            'taxi',
+                            'restaurant',
+                            'hospital',
+                            'hotel',
+                            'police'
+                            ]
+        self.target_domain = 'attraction'
+        self.train_data_file = ['data_in_domain_' + domain + '.json' for domain in self.source_domain]
+        self.adapt_data_file = 'minor_data_in_domain_' + self.target_domain + '.json'
+        self.test_data_file = 'data_in_domain_' + self.target_domain + '.json'
+
         self.dev_list = 'data/multi-woz/valListFile.json'
         self.test_list = 'data/multi-woz/testListFile.json'
         self.dbs = {
@@ -55,6 +62,7 @@ class _Config:
         self.exp_path = 'to be generated'
         self.log_time = time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime())
         self.spv_proportion = 100
+        self.split = [9,1,0]
 
         # experiment settings
         self.mode = 'unknown'

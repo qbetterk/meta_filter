@@ -16,7 +16,7 @@ np.random.seed(0)
 class _ReaderBase(object):
 
     def __init__(self):
-        self.train, self.dev, self.test = [], [], []
+        self.train, self.dev, self.test, self.adapt = [], [], [], []
         self.vocab = None
         self.db = None
 
@@ -34,7 +34,6 @@ class _ReaderBase(object):
         # for k in del_l:
         #    turn_bucket.pop(k)
         return OrderedDict(sorted(turn_bucket.items(), key=lambda i:i[0]))
-
 
     def _construct_mini_batch(self, data):
         all_batches = []
@@ -94,27 +93,21 @@ class _ReaderBase(object):
                 dialogs[dial_id].append(dial_turn)
         return dialogs
 
-
     def get_batches(self, set_name):
         global dia_count
-        log_str = ''
+        # log_str = ''
         name_to_set = {'train': self.train, 'test': self.test, 'dev': self.dev}
         dial = name_to_set[set_name]
         turn_bucket = self._bucket_by_turn(dial)
-        # self._shuffle_turn_bucket(turn_bucket)
         all_batches = []
         for k in turn_bucket:
             if set_name != 'test' and k==1 or k>=17:
                 continue
             batches = self._construct_mini_batch(turn_bucket[k])
-            log_str += "turn num:%d, dial num: %d, batch num: %d last batch len: %d\n"%(
-                    k, len(turn_bucket[k]), len(batches), len(batches[-1]))
-            # print("turn num:%d, dial num:v%d, batch num: %d, "%(k, len(turn_bucket[k]), len(batches)))
+            # log_str += "turn num:%d, dial num: %d, batch num: %d last batch len: %d\n"%(
+                    # k, len(turn_bucket[k]), len(batches), len(batches[-1]))
             all_batches += batches
-        log_str += 'total batch num: %d\n'%len(all_batches)
-        # print('total batch num: %d'%len(all_batches))
-        # print('dialog count: %d'%dia_count)
-        # return all_batches
+        # log_str += 'total batch num: %d\n'%len(all_batches)
         random.shuffle(all_batches)
         for i, batch in enumerate(all_batches):
             yield self.transpose_batch(batch)
@@ -188,7 +181,7 @@ class _ReaderBase(object):
 
     def mini_batch_iterator_maml_supervised(self, set_name):
 
-        name_to_set = {'train': self.train, 'test': self.test, 'dev': self.dev}
+        name_to_set = {'train': self.train, 'test': self.test, 'dev': self.dev; 'adapt': self.adapt}
         total_dial_domain = name_to_set[set_name]
 
         if set_name == 'train':
@@ -214,14 +207,26 @@ class _ReaderBase(object):
 
             for turn_num, turn_batch_domain in enumerate(output):
                 yield turn_batch_domain
-            # return output
-        else:
+
+        elif set_name == 'dev':
             dials = []
             for domain in range(len(total_dial_domain)):
                 dials += total_dial_domain[domain]
 
             turn_bucket = self._bucket_by_turn(dials)
-            # self._shuffle_turn_bucket(turn_bucket)
+            all_batches = []
+            for k in turn_bucket:
+                batches = self._construct_mini_batch(turn_bucket[k])
+                all_batches += batches
+            self._mark_batch_as_supervised(all_batches)
+            random.shuffle(all_batches)
+            for i, batch in enumerate(all_batches):
+                yield self._transpose_batch(batch)
+
+        else:
+            dials = total_dial_domain
+
+            turn_bucket = self._bucket_by_turn(dials)
             all_batches = []
             for k in turn_bucket:
                 batches = self._construct_mini_batch(turn_bucket[k])
@@ -277,7 +282,7 @@ class _ReaderBase(object):
 
 
 class MultiWozReader(_ReaderBase):
-    def __init__(self):
+    def __init__(self, maml=False):
         super().__init__()
         self.nlp = spacy.load('en_core_web_sm')
         self.db = MultiWozDB(cfg.dbs)
@@ -423,33 +428,43 @@ class MultiWozReader(_ReaderBase):
 
     def _load_data_maml(self, save_temp=False):
         self.data = {}
-        for domain in cfg.data_file:
+        for domain in cfg.train_data_file:
             data_json = open(os.path.join(cfg.data_path + domain), 'r', encoding='utf-8')
             data_dom = json.loads(data_json.read().lower())
-            train_dom, dev_dom, test_dom = [] , [], []
+            data_json.close()
+
+            train_num = len(data_dom) * cfg.split[0] // sum(cfg.split)
+            train_list = random.choices(list(data_dom.keys()), k = train_num)
+            train_dom, dev_dom = [], []
             for fn, dial in data_dom.items():
-                if 'all' in cfg.exp_domains or self.exp_files.get(fn):
-                    if self.dev_files.get(fn):
-                        dev_dom.append(self._get_encoded_data(fn, dial))
-                    elif self.test_files.get(fn):
-                        test_dom.append(self._get_encoded_data(fn, dial))
-                    else:
-                        train_dom.append(self._get_encoded_data(fn, dial))
-            if save_temp:
-                json.dump(test_dom, open('data/multi-woz-analysis/test.encoded.json','w'), indent=2)
-                self.vocab.save_vocab('data/multi-woz-analysis/vocab_temp')
+                if fn in train_list:
+                    train_dom.append(self._get_encoded_data(fn, dial))
+                else:
+                    dev_dom.append(self._get_encoded_data(fn, dial))
 
             random.shuffle(train_dom)
             random.shuffle(dev_dom)
-            random.shuffle(test_dom)
 
             self.train.append(train_dom)
             self.dev.append(dev_dom)
-            self.test.append(test_dom)
 
             self.data.update(data_dom)
 
-            data_json.close()
+        test_data_json = open(os.path.join(cfg.data_path + cfg.test_data_file), 'r', encoding='utf-8')
+        test_data_dom = json.loads(test_data_json.read().lower())
+        test_data_json.close()
+        adapt_data_json = open(os.path.join(cfg.data_path + cfg.adapt_data_file), 'r', encoding='utf-8')
+        adapt_data_dom = json.loads(adapt_data_json.read().lower())
+        adapt_data_json.close()
+
+        self.test = [self._get_encoded_data(fn, dial) for (fn, dial) in test_data_dom.items()]
+        self.adapt = [self._get_encoded_data(fn, dial) for (fn, dial) in adapt_data_dom.items()]
+        if save_temp:
+            json.dump(self.test, open('data/multi-woz-analysis/test.encoded.json','w'), indent = 4)
+            self.vocab.save_vocab('data/multi-woz-analysis/vocab_temp')
+            
+        random.shuffle(self.test)
+        random.shuffle(self.adapt)
 
     def _get_encoded_data(self, fn, dial):
         encoded_dial = []
