@@ -59,7 +59,7 @@ class _Config:
         self.domain_file_path = 'data/multi-woz-processed/domain_files.json'
         self.slot_value_set_path = 'db/value_set_processed.json'
         self.multi_acts_path = 'data/multi-woz-processed/multi_act_mapping_train.json'
-        self.exp_path = 'to be generated'
+        self.exp_path = '' #'to be generated'
         self.log_time = time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime())
         self.spv_proportion = 100
         self.split = [9,1,0]
@@ -69,7 +69,7 @@ class _Config:
         self.cuda = True
         self.cuda_device = [1]
         self.exp_no = ''
-        self.seed = 11
+        self.seed = 0
         self.exp_domains = ['all']
         self.save_log = True
         self.report_interval = 5
@@ -111,7 +111,8 @@ class _Config:
         self.valid_loss = 'score'
 
         # evaluation settings
-        self.eval_load_path ='experiments/all_multi_acts_sample3_sd777_lr0.005_bs80_sp5_dc3'
+        # self.eval_load_path ='experiments/maml_all_no_aug_sd333_lr0.005_bs32_sp5_dc3'
+        self.eval_load_path ='experiments/filter_all_no_aug_sd333_lr0.005_bs32_sp5_dc3'
         self.eval_per_domain = False
         self.use_true_pv_resp = True
         self.use_true_prev_bspn = False

@@ -181,7 +181,7 @@ class _ReaderBase(object):
 
     def mini_batch_iterator_maml_supervised(self, set_name):
 
-        name_to_set = {'train': self.train, 'test': self.test, 'dev': self.dev; 'adapt': self.adapt}
+        name_to_set = {'train': self.train, 'test': self.test, 'dev': self.dev, 'adapt': self.adapt}
         total_dial_domain = name_to_set[set_name]
 
         if set_name == 'train':
@@ -435,18 +435,18 @@ class MultiWozReader(_ReaderBase):
 
             train_num = len(data_dom) * cfg.split[0] // sum(cfg.split)
             train_list = random.choices(list(data_dom.keys()), k = train_num)
-            train_dom, dev_dom = [], []
+            train_data, dev_data = [], []
             for fn, dial in data_dom.items():
                 if fn in train_list:
-                    train_dom.append(self._get_encoded_data(fn, dial))
+                    train_data.append(self._get_encoded_data(fn, dial))
                 else:
-                    dev_dom.append(self._get_encoded_data(fn, dial))
+                    dev_data.append(self._get_encoded_data(fn, dial))
 
-            random.shuffle(train_dom)
-            random.shuffle(dev_dom)
+            random.shuffle(train_data)
+            random.shuffle(dev_data)
 
-            self.train.append(train_dom)
-            self.dev.append(dev_dom)
+            self.train.append(train_data)
+            self.dev.append(dev_data)
 
             self.data.update(data_dom)
 
@@ -465,6 +465,9 @@ class MultiWozReader(_ReaderBase):
             
         random.shuffle(self.test)
         random.shuffle(self.adapt)
+
+        self.data.update(test_data_dom)
+        self.data.update(adapt_data_dom)
 
     def _get_encoded_data(self, fn, dial):
         encoded_dial = []

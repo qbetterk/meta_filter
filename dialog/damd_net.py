@@ -960,7 +960,6 @@ class DAMD(nn.Module):
 
         return total_loss, losses
 
-
     def forward(self, inputs, hidden_states, first_turn, mode):
         if mode == 'train' or mode == 'valid':
             # probs, hidden_states = \
@@ -973,7 +972,6 @@ class DAMD(nn.Module):
             return decoded
         elif mode == 'rl':
             raise NotImplementedError('RL not available at the moment')
-
 
     def train_forward(self, inputs, hidden_states, first_turn):
         """

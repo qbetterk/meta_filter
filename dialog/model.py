@@ -220,261 +220,6 @@ class Model(object):
         logging.info(str(cfg))
         self.eval()
 
-    def train_maml(self):
-        self.domain_num = len(cfg.source_domain)
-        lr = cfg.lr
-        prev_min_loss, early_stop_count = 1 << 30, cfg.early_stop_count
-        weight_decay_count = cfg.weight_decay_count
-        train_time = 0
-        sw = time.time()
-
-        for epoch in range(cfg.epoch_num):
-            if epoch <= self.base_epoch:
-                continue
-            sup_loss = 0
-            sup_cnt = 0
-            optim = self.optim
-            # data_iterator generatation size: (batch num, turn num, batch size)
-            btm = time.time()
-
-
-            turn_batches_domain = self.reader.mini_batch_iterator_maml_supervised('train')
-
-            optim = Adam(lr=lr, params=filter(lambda x: x.requires_grad, self.m.parameters()),weight_decay=1e-5)
-            meta_optim = Adam(lr = lr, params=filter(lambda x: x.requires_grad, self.m.parameters()),weight_decay=1e-5)
-
-            init_state = copy.deepcopy(self.m.state_dict())
-            for turn_num, turn_batch_domain in enumerate(turn_batches_domain):
-                hidden_states = {}
-                py_prev = {'pv_resp': None, 'pv_bspn': None, 'pv_aspn': None, 'pv_dspn': None, 'pv_bsdx': None}
-                bgt = time.time()
-
-                loss_doms = []
-                losses_doms = []
-                init_state = copy.deepcopy(self.m.state_dict())
-                for k in range(self.domain_num):
-                # for k-th task:
-                    turn_batch = turn_batch_domain[k]
-
-                    self.m.load_state_dict(init_state)
-                    optim.zero_grad()
-
-
-                    first_turn = 1#(turn_num==0)
-                    inputs = self.reader.convert_batch(turn_batch, py_prev, first_turn=first_turn)
-                    inputs = self.add_torch_input(inputs, first_turn=first_turn)
-                    # total_loss, losses, hidden_states = self.m(inputs, hidden_states, first_turn, mode='train')
-                    # print('forward completed')
-                    py_prev['pv_resp'] = turn_batch['resp']
-                    if cfg.enable_bspn:
-                        py_prev['pv_bspn'] = turn_batch['bspn']
-                        py_prev['pv_bsdx'] = turn_batch['bsdx']
-                    if cfg.enable_aspn:
-                        py_prev['pv_aspn'] = turn_batch['aspn']
-                    if cfg.enable_dspn:
-                        py_prev['pv_dspn'] = turn_batch['dspn']
-
-
-                    total_loss, losses = self.m(inputs, hidden_states, first_turn, mode='train')
-
-                    total_loss = total_loss.mean()
-                    total_loss.backward()
-                    grad = torch.nn.utils.clip_grad_norm_(self.m.parameters(), 5.0)
-                    optim.step()
-
-                    total_loss, losses = self.m(inputs, hidden_states, first_turn, mode='train')
-                    total_loss = total_loss.mean()
-
-                    loss_doms.append(total_loss)
-                    losses_doms.append(losses)
-
-                self.m.load_state_dict(init_state)
-                meta_optim.zero_grad()
-                loss_meta = torch.stack(loss_doms).sum(0) / self.domain_num
-                loss_meta.backward()
-                grad = torch.nn.utils.clip_grad_norm_(self.m.parameters(), 5.0)
-                meta_optim.step()
-
-                losses_meta = defaultdict(float)
-                for losses in losses_doms:
-                    for part in losses:
-                        losses_meta[part] += float(losses[part])
-                for part in losses_meta:
-                    losses_meta[part] /= self.domain_num
-
-                sup_loss += float(loss_meta)
-                sup_cnt += 1
-                torch.cuda.empty_cache()
-
-                if (turn_num+1)%cfg.report_interval==0:
-                    logging.info(
-                            'iter:{} [total|bspn|aspn|resp] loss: {:.2f} {:.2f} {:.2f} {:.2f} grad:{:.2f} time: {:.1f} turn:{} '.format(turn_num+1,
-                                                                           float(loss_meta),
-                                                                           float(losses_meta[cfg.bspn_mode]),float(losses_meta['aspn']),float(losses_meta['resp']),
-                                                                           grad,
-                                                                           time.time()-btm,
-                                                                           turn_num+1))
-                    if cfg.enable_dst and cfg.bspn_mode == 'bsdx':
-                        logging.info('bspn-dst:{:.3f}'.format(float(losses['bspn'])))
-                    if cfg.multi_acts_training:
-                        logging.info('aspn-aug:{:.3f}'.format(float(losses['aspn_aug'])))
-
-            epoch_sup_loss = sup_loss / (sup_cnt + 1e-8)
-            valid_loss = self.validate_maml()
-            logging.info('epoch: %d, train loss: %.3f, valid loss: %.3f, total time: %.1fmin' % (epoch+1, epoch_sup_loss,
-                    valid_loss, (time.time()-sw)/60))
-            if valid_loss <= prev_min_loss:
-                early_stop_count = cfg.early_stop_count
-                weight_decay_count = cfg.weight_decay_count
-                prev_min_loss = valid_loss
-                self.save_model(epoch)
-            else:
-                early_stop_count -= 1
-                weight_decay_count -= 1
-                logging.info('epoch: %d early stop countdown %d' % (epoch+1, early_stop_count))
-                if not weight_decay_count:
-                    lr *= cfg.lr_decay
-                    self.optim = Adam(lr=lr, params=filter(lambda x: x.requires_grad, self.m.parameters()),
-                                  weight_decay=5e-5)
-                    weight_decay_count = cfg.weight_decay_count
-                    logging.info('learning rate decay, learning rate: %f' % (lr))
-
-    def validate_maml(self, data='dev', do_test=False):
-        valid_loss, count = 0, 0
-        data_iterator = self.reader.mini_batch_iterator_maml_supervised('dev')
-        result_collection = {}
-        optim = self.optim
-        init_state = copy.deepcopy(self.m.state_dict())
-
-        for dial_batch in data_iterator:
-            turn_states = {}
-            hidden_states = {}
-            py_prev = {'pv_resp': None, 'pv_bspn': None, 'pv_aspn':None, 'pv_dspn': None, 'pv_bsdx': None}
-            for turn_num, turn_batch in enumerate(dial_batch):
-
-                self.m.load_state_dict(init_state)
-
-                first_turn = (turn_num==0)
-                inputs = self.reader.convert_batch(turn_batch, py_prev, first_turn=first_turn)
-                inputs = self.add_torch_input(inputs, first_turn=first_turn)
-
-                total_loss, losses = self.m(inputs, hidden_states, first_turn, mode='train')
-                total_loss = total_loss.mean()
-                total_loss.backward()
-                grad = torch.nn.utils.clip_grad_norm_(self.m.parameters(), 5.0)
-                optim.step()
-
-                if cfg.valid_loss not in ['score', 'match', 'success', 'bleu']:
-                    total_loss, losses = self.m(inputs, hidden_states, first_turn, mode='train')
-                    py_prev['pv_resp'] = turn_batch['resp']
-                    if cfg.enable_bspn:
-                        py_prev['pv_bspn'] = turn_batch['bspn']
-                        py_prev['pv_bsdx'] = turn_batch['bsdx']
-                    if cfg.enable_aspn:
-                        py_prev['pv_aspn'] = turn_batch['aspn']
-                    if cfg.enable_dspn:
-                        py_prev['pv_dspn'] = turn_batch['dspn']
-
-                    if cfg.valid_loss == 'total_loss':
-                        valid_loss += float(total_loss)
-                    elif cfg.valid_loss == 'bspn_loss':
-                        valid_loss += float(losses[cfg.bspn_mode])
-                    elif cfg.valid_loss == 'aspn_loss':
-                        valid_loss += float(losses['aspn'])
-                    elif cfg.valid_loss == 'resp_loss':
-                        valid_loss += float(losses['reps'])
-                    else:
-                        raise ValueError('Invalid validation loss type!')
-                else:
-                    decoded = self.m(inputs, hidden_states, first_turn, mode='test')
-                    turn_batch['resp_gen'] = decoded['resp']
-                    if cfg.bspn_mode == 'bspn' or cfg.enable_dst:
-                        turn_batch['bspn_gen'] = decoded['bspn']
-                    py_prev['pv_resp'] = turn_batch['resp'] if cfg.use_true_pv_resp else decoded['resp']
-                    if cfg.enable_bspn:
-                        py_prev['pv_'+cfg.bspn_mode] = turn_batch[cfg.bspn_mode] if cfg.use_true_prev_bspn else decoded[cfg.bspn_mode]
-                        py_prev['pv_bspn'] = turn_batch['bspn'] if cfg.use_true_prev_bspn or 'bspn' not in decoded else decoded['bspn']
-                    if cfg.enable_aspn:
-                        py_prev['pv_aspn'] = turn_batch['aspn'] if cfg.use_true_prev_aspn else decoded['aspn']
-                    if cfg.enable_dspn:
-                        py_prev['pv_dspn'] = turn_batch['dspn'] if cfg.use_true_prev_dspn else decoded['dspn']
-                count += 1
-                torch.cuda.empty_cache()
-
-            if cfg.valid_loss in ['score', 'match', 'success', 'bleu']:
-                result_collection.update(self.reader.inverse_transpose_batch(dial_batch))
-
-        if cfg.valid_loss not in ['score', 'match', 'success', 'bleu']:
-            valid_loss /= (count + 1e-8)
-        else:
-            results, _ = self.reader.wrap_result(result_collection)
-            bleu, success, match = self.evaluator.validation_metric(results)
-            score = 0.5 * (success + match) + bleu
-            valid_loss = 130 - score
-            logging.info('validation [CTR] match: %2.1f  success: %2.1f  bleu: %2.1f'%(match, success, bleu))
-        return valid_loss
-    
-    def eval_maml(self, data='test'):
-        self.reader.result_file = None
-        result_collection = {}
-        data_iterator = self.reader.mini_batch_iterator_maml_supervised('test')
-        for batch_num, dial_batch in tqdm.tqdm(enumerate(data_iterator)):
-            hidden_states = {}
-            py_prev = {'pv_resp': None, 'pv_bspn': None, 'pv_aspn':None, 'pv_dspn': None, 'pv_bsdx':None}
-            print('batch_size:', len(dial_batch[0]['resp']))
-            for turn_num, turn_batch in enumerate(dial_batch):
-                first_turn = (turn_num==0)
-                inputs = self.reader.convert_batch(turn_batch, py_prev, first_turn=first_turn)
-                inputs = self.add_torch_input(inputs, first_turn=first_turn)
-                decoded = self.m(inputs, hidden_states, first_turn, mode='test')
-                turn_batch['resp_gen'] = decoded['resp']
-                if cfg.bspn_mode == 'bsdx':
-                    turn_batch['bsdx_gen'] = decoded['bsdx'] if cfg.enable_bspn else [[0]] * len(decoded['resp'])
-                if cfg.bspn_mode == 'bspn' or cfg.enable_dst:
-                    turn_batch['bspn_gen'] = decoded['bspn'] if cfg.enable_bspn else [[0]] * len(decoded['resp'])
-                turn_batch['aspn_gen'] = decoded['aspn'] if cfg.enable_aspn else [[0]] * len(decoded['resp'])
-                turn_batch['dspn_gen'] = decoded['dspn'] if cfg.enable_dspn else [[0]] * len(decoded['resp'])
-
-                if self.reader.multi_acts_record is not None:
-                    turn_batch['multi_act_gen'] = self.reader.multi_acts_record
-                if cfg.record_mode:
-                    turn_batch['multi_act'] = self.reader.aspn_collect
-                    turn_batch['multi_resp'] = self.reader.resp_collect
-                py_prev['pv_resp'] = turn_batch['resp'] if cfg.use_true_pv_resp else decoded['resp']
-                if cfg.enable_bspn:
-                    py_prev['pv_'+cfg.bspn_mode] = turn_batch[cfg.bspn_mode] if cfg.use_true_prev_bspn else decoded[cfg.bspn_mode]
-                    py_prev['pv_bspn'] = turn_batch['bspn'] if cfg.use_true_prev_bspn or 'bspn' not in decoded else decoded['bspn']
-                if cfg.enable_aspn:
-                    py_prev['pv_aspn'] = turn_batch['aspn'] if cfg.use_true_prev_aspn else decoded['aspn']
-                if cfg.enable_dspn:
-                    py_prev['pv_dspn'] = turn_batch['dspn'] if cfg.use_true_prev_dspn else decoded['dspn']
-                torch.cuda.empty_cache()
-            result_collection.update(self.reader.inverse_transpose_batch(dial_batch))
-
-        if cfg.record_mode:
-            self.reader.record_utterance(result_collection)
-            quit()
-        results, field = self.reader.wrap_result(result_collection)
-        self.reader.save_result('w', results, field)
-
-        metric_results = self.evaluator.run_metrics(results)
-        metric_field = list(metric_results[0].keys())
-        req_slots_acc = metric_results[0]['req_slots_acc']
-        info_slots_acc = metric_results[0]['info_slots_acc']
-
-        self.reader.save_result('w', metric_results, metric_field,
-                                            write_title='EVALUATION RESULTS:')
-        self.reader.save_result('a', [info_slots_acc], list(info_slots_acc.keys()),
-                                            write_title='INFORM ACCURACY OF EACH SLOTS:')
-        self.reader.save_result('a', [req_slots_acc], list(req_slots_acc.keys()),
-                                            write_title='REQUEST SUCCESS RESULTS:')
-        self.reader.save_result('a', results, field+['wrong_domain', 'wrong_act', 'wrong_inform'],
-                                            write_title='DECODED RESULTS:')
-        self.reader.save_result_report(metric_results)
-        # self.reader.metric_record(metric_results)
-        self.m.train()
-        return None
-
     def adapt(self):
         lr = cfg.lr
         prev_min_loss, early_stop_count = 1 << 30, cfg.early_stop_count
@@ -491,7 +236,7 @@ class Model(object):
             # data_iterator generatation size: (batch num, turn num, batch size)
             btm = time.time()
             turn_batches_domain = self.reader.mini_batch_iterator_maml_supervised('adapt')
-            for iter_num, dial_batch in enumerate(data_iterator):
+            for iter_num, dial_batch in enumerate(turn_batches_domain):
                 hidden_states = {}
                 py_prev = {'pv_resp': None, 'pv_bspn': None, 'pv_aspn':None, 'pv_dspn': None, 'pv_bsdx': None}
                 bgt = time.time()
@@ -537,6 +282,36 @@ class Model(object):
 
             epoch_sup_loss = sup_loss / (sup_cnt + 1e-8)
             logging.info('epoch: %d, train loss: %.3f, total time: %.1fmin' % (epoch+1, epoch_sup_loss, (time.time()-sw)/60))
+
+            if epoch_sup_loss <= prev_min_loss:
+                early_stop_count = cfg.early_stop_count
+                weight_decay_count = cfg.weight_decay_count
+                prev_min_loss = epoch_sup_loss
+                self.save_model(epoch)
+            else:
+                early_stop_count -= 1
+                weight_decay_count -= 1
+                logging.info('epoch: %d early stop countdown %d' % (epoch+1, early_stop_count))
+                if not early_stop_count:
+                    # self.load_model()
+                    # print('result preview...')
+                    # file_handler = logging.FileHandler(os.path.join(cfg.exp_path, 'eval_log%s.json'%cfg.seed))
+                    # logging.getLogger('').addHandler(file_handler)
+                    # logging.info(str(cfg))
+                    # self.eval()
+                    return
+                if not weight_decay_count:
+                    lr *= cfg.lr_decay
+                    self.optim = Adam(lr=lr, params=filter(lambda x: x.requires_grad, self.m.parameters()),
+                                  weight_decay=5e-5)
+                    weight_decay_count = cfg.weight_decay_count
+                    logging.info('learning rate decay, learning rate: %f' % (lr))
+        # self.load_model()
+        # print('result preview...')
+        # file_handler = logging.FileHandler(os.path.join(cfg.exp_path, 'eval_log%s.json'%cfg.seed))
+        # logging.getLogger('').addHandler(file_handler)
+        # logging.info(str(cfg))
+        # self.eval_maml(data='test')
 
     def validate(self, data='dev', do_test=False):
         self.m.eval()
@@ -685,6 +460,602 @@ class Model(object):
         self.m.train()
         return None
 
+    def train_maml(self):
+        self.domain_num = len(cfg.source_domain)
+        lr = cfg.lr
+        prev_min_loss, early_stop_count = 1 << 30, cfg.early_stop_count
+        weight_decay_count = cfg.weight_decay_count
+        train_time = 0
+        sw = time.time()
+
+        for epoch in range(cfg.epoch_num):
+            if epoch <= self.base_epoch:
+                continue
+            sup_loss = 0
+            sup_cnt = 0
+            optim = self.optim
+            # data_iterator generatation size: (batch num, turn num, batch size)
+            btm = time.time()
+
+
+            turn_batches_domain = self.reader.mini_batch_iterator_maml_supervised('train')
+
+            # optim = Adam(lr=lr, params=filter(lambda x: x.requires_grad, self.m.parameters()),weight_decay=1e-5)
+            meta_optim = Adam(lr = lr, params=filter(lambda x: x.requires_grad, self.m.parameters()),weight_decay=1e-5)
+
+            init_state = copy.deepcopy(self.m.state_dict())
+            for turn_num, turn_batch_domain in enumerate(turn_batches_domain):
+                hidden_states = {}
+                py_prev = {'pv_resp': None, 'pv_bspn': None, 'pv_aspn': None, 'pv_dspn': None, 'pv_bsdx': None}
+                bgt = time.time()
+
+                loss_doms = []
+                losses_doms = []
+                init_state = copy.deepcopy(self.m.state_dict())
+                for k in range(self.domain_num):
+                # for k-th task:
+                    turn_batch = turn_batch_domain[k]
+
+                    self.m.load_state_dict(init_state)
+                    optim.zero_grad()
+
+
+                    first_turn = 1#(turn_num==0)
+                    inputs = self.reader.convert_batch(turn_batch, py_prev, first_turn=first_turn)
+                    inputs = self.add_torch_input(inputs, first_turn=first_turn)
+                    # total_loss, losses, hidden_states = self.m(inputs, hidden_states, first_turn, mode='train')
+                    # print('forward completed')
+                    py_prev['pv_resp'] = turn_batch['resp']
+                    if cfg.enable_bspn:
+                        py_prev['pv_bspn'] = turn_batch['bspn']
+                        py_prev['pv_bsdx'] = turn_batch['bsdx']
+                    if cfg.enable_aspn:
+                        py_prev['pv_aspn'] = turn_batch['aspn']
+                    if cfg.enable_dspn:
+                        py_prev['pv_dspn'] = turn_batch['dspn']
+
+
+                    total_loss, losses = self.m(inputs, hidden_states, first_turn, mode='train')
+
+                    total_loss = total_loss.mean()
+                    total_loss.backward()
+                    grad = torch.nn.utils.clip_grad_norm_(self.m.parameters(), 5.0)
+                    optim.step()
+
+                    total_loss, losses = self.m(inputs, hidden_states, first_turn, mode='train')
+                    total_loss = total_loss.mean()
+
+                    loss_doms.append(total_loss)
+                    losses_doms.append(losses)
+
+                self.m.load_state_dict(init_state)
+                meta_optim.zero_grad()
+                loss_meta = torch.stack(loss_doms).sum(0) / self.domain_num
+                loss_meta.backward()
+                grad = torch.nn.utils.clip_grad_norm_(self.m.parameters(), 5.0)
+                meta_optim.step()
+
+                losses_meta = defaultdict(float)
+                for losses in losses_doms:
+                    for part in losses:
+                        losses_meta[part] += float(losses[part])
+                for part in losses_meta:
+                    losses_meta[part] /= self.domain_num
+
+                sup_loss += float(loss_meta)
+                sup_cnt += 1
+                torch.cuda.empty_cache()
+
+                if (turn_num+1)%cfg.report_interval==0:
+                    logging.info(
+                            'iter:{} [total|bspn|aspn|resp] loss: {:.2f} {:.2f} {:.2f} {:.2f} grad:{:.2f} time: {:.1f} turn:{} '.format(turn_num+1,
+                                                                           float(loss_meta),
+                                                                           float(losses_meta[cfg.bspn_mode]),float(losses_meta['aspn']),float(losses_meta['resp']),
+                                                                           grad,
+                                                                           time.time()-btm,
+                                                                           turn_num+1))
+                    if cfg.enable_dst and cfg.bspn_mode == 'bsdx':
+                        logging.info('bspn-dst:{:.3f}'.format(float(losses['bspn'])))
+                    if cfg.multi_acts_training:
+                        logging.info('aspn-aug:{:.3f}'.format(float(losses['aspn_aug'])))
+
+            epoch_sup_loss = sup_loss / (sup_cnt + 1e-8)
+            valid_loss = self.validate_maml()
+            logging.info('epoch: %d, train loss: %.3f, valid loss: %.3f, total time: %.1fmin' % (epoch+1, epoch_sup_loss,
+                    valid_loss, (time.time()-sw)/60))
+            if valid_loss <= prev_min_loss:
+                early_stop_count = cfg.early_stop_count
+                weight_decay_count = cfg.weight_decay_count
+                prev_min_loss = valid_loss
+                self.save_model(epoch)
+            else:
+                early_stop_count -= 1
+                weight_decay_count -= 1
+                logging.info('epoch: %d early stop countdown %d' % (epoch+1, early_stop_count))
+                if not early_stop_count:
+                    return
+                if not weight_decay_count:
+                    lr *= cfg.lr_decay
+                    self.optim = Adam(lr=lr, params=filter(lambda x: x.requires_grad, self.m.parameters()),
+                                  weight_decay=5e-5)
+                    weight_decay_count = cfg.weight_decay_count
+                    logging.info('learning rate decay, learning rate: %f' % (lr))
+
+    def validate_maml(self, data='dev', do_test=False):
+        valid_loss, count = 0, 0
+        data_iterator = self.reader.mini_batch_iterator_maml_supervised('dev')
+        result_collection = {}
+        optim = self.optim
+        init_state = copy.deepcopy(self.m.state_dict())
+
+        for dial_batch in data_iterator:
+            turn_states = {}
+            hidden_states = {}
+            py_prev = {'pv_resp': None, 'pv_bspn': None, 'pv_aspn':None, 'pv_dspn': None, 'pv_bsdx': None}
+            for turn_num, turn_batch in enumerate(dial_batch):
+
+                self.m.load_state_dict(init_state)
+
+                first_turn = (turn_num==0)
+                inputs = self.reader.convert_batch(turn_batch, py_prev, first_turn=first_turn)
+                inputs = self.add_torch_input(inputs, first_turn=first_turn)
+
+                total_loss, losses = self.m(inputs, hidden_states, first_turn, mode='train')
+                total_loss = total_loss.mean()
+                total_loss.backward()
+                grad = torch.nn.utils.clip_grad_norm_(self.m.parameters(), 5.0)
+                optim.step()
+
+                if cfg.valid_loss not in ['score', 'match', 'success', 'bleu']:
+                    total_loss, losses = self.m(inputs, hidden_states, first_turn, mode='train')
+                    py_prev['pv_resp'] = turn_batch['resp']
+                    if cfg.enable_bspn:
+                        py_prev['pv_bspn'] = turn_batch['bspn']
+                        py_prev['pv_bsdx'] = turn_batch['bsdx']
+                    if cfg.enable_aspn:
+                        py_prev['pv_aspn'] = turn_batch['aspn']
+                    if cfg.enable_dspn:
+                        py_prev['pv_dspn'] = turn_batch['dspn']
+
+                    if cfg.valid_loss == 'total_loss':
+                        valid_loss += float(total_loss)
+                    elif cfg.valid_loss == 'bspn_loss':
+                        valid_loss += float(losses[cfg.bspn_mode])
+                    elif cfg.valid_loss == 'aspn_loss':
+                        valid_loss += float(losses['aspn'])
+                    elif cfg.valid_loss == 'resp_loss':
+                        valid_loss += float(losses['reps'])
+                    else:
+                        raise ValueError('Invalid validation loss type!')
+                else:
+                    decoded = self.m(inputs, hidden_states, first_turn, mode='test')
+                    turn_batch['resp_gen'] = decoded['resp']
+                    if cfg.bspn_mode == 'bspn' or cfg.enable_dst:
+                        turn_batch['bspn_gen'] = decoded['bspn']
+                    py_prev['pv_resp'] = turn_batch['resp'] if cfg.use_true_pv_resp else decoded['resp']
+                    if cfg.enable_bspn:
+                        py_prev['pv_'+cfg.bspn_mode] = turn_batch[cfg.bspn_mode] if cfg.use_true_prev_bspn else decoded[cfg.bspn_mode]
+                        py_prev['pv_bspn'] = turn_batch['bspn'] if cfg.use_true_prev_bspn or 'bspn' not in decoded else decoded['bspn']
+                    if cfg.enable_aspn:
+                        py_prev['pv_aspn'] = turn_batch['aspn'] if cfg.use_true_prev_aspn else decoded['aspn']
+                    if cfg.enable_dspn:
+                        py_prev['pv_dspn'] = turn_batch['dspn'] if cfg.use_true_prev_dspn else decoded['dspn']
+                count += 1
+                torch.cuda.empty_cache()
+
+            if cfg.valid_loss in ['score', 'match', 'success', 'bleu']:
+                result_collection.update(self.reader.inverse_transpose_batch(dial_batch))
+
+        if cfg.valid_loss not in ['score', 'match', 'success', 'bleu']:
+            valid_loss /= (count + 1e-8)
+        else:
+            results, _ = self.reader.wrap_result(result_collection)
+            bleu, success, match = self.evaluator.validation_metric(results)
+            score = 0.5 * (success + match) + bleu
+            valid_loss = 130 - score
+            logging.info('validation [CTR] match: %2.1f  success: %2.1f  bleu: %2.1f'%(match, success, bleu))
+        return valid_loss
+    
+    def eval_maml(self, data='test'):
+        self.reader.result_file = None
+        result_collection = {}
+        data_iterator = self.reader.mini_batch_iterator_maml_supervised('test')
+        for batch_num, dial_batch in tqdm.tqdm(enumerate(data_iterator)):
+            hidden_states = {}
+            py_prev = {'pv_resp': None, 'pv_bspn': None, 'pv_aspn':None, 'pv_dspn': None, 'pv_bsdx':None}
+            print('batch_size:', len(dial_batch[0]['resp']))
+            for turn_num, turn_batch in enumerate(dial_batch):
+                first_turn = (turn_num==0)
+                inputs = self.reader.convert_batch(turn_batch, py_prev, first_turn=first_turn)
+                inputs = self.add_torch_input(inputs, first_turn=first_turn)
+                decoded = self.m(inputs, hidden_states, first_turn, mode='test')
+                turn_batch['resp_gen'] = decoded['resp']
+                if cfg.bspn_mode == 'bsdx':
+                    turn_batch['bsdx_gen'] = decoded['bsdx'] if cfg.enable_bspn else [[0]] * len(decoded['resp'])
+                if cfg.bspn_mode == 'bspn' or cfg.enable_dst:
+                    turn_batch['bspn_gen'] = decoded['bspn'] if cfg.enable_bspn else [[0]] * len(decoded['resp'])
+                turn_batch['aspn_gen'] = decoded['aspn'] if cfg.enable_aspn else [[0]] * len(decoded['resp'])
+                turn_batch['dspn_gen'] = decoded['dspn'] if cfg.enable_dspn else [[0]] * len(decoded['resp'])
+
+                if self.reader.multi_acts_record is not None:
+                    turn_batch['multi_act_gen'] = self.reader.multi_acts_record
+                if cfg.record_mode:
+                    turn_batch['multi_act'] = self.reader.aspn_collect
+                    turn_batch['multi_resp'] = self.reader.resp_collect
+                py_prev['pv_resp'] = turn_batch['resp'] if cfg.use_true_pv_resp else decoded['resp']
+                if cfg.enable_bspn:
+                    py_prev['pv_'+cfg.bspn_mode] = turn_batch[cfg.bspn_mode] if cfg.use_true_prev_bspn else decoded[cfg.bspn_mode]
+                    py_prev['pv_bspn'] = turn_batch['bspn'] if cfg.use_true_prev_bspn or 'bspn' not in decoded else decoded['bspn']
+                if cfg.enable_aspn:
+                    py_prev['pv_aspn'] = turn_batch['aspn'] if cfg.use_true_prev_aspn else decoded['aspn']
+                if cfg.enable_dspn:
+                    py_prev['pv_dspn'] = turn_batch['dspn'] if cfg.use_true_prev_dspn else decoded['dspn']
+                torch.cuda.empty_cache()
+            result_collection.update(self.reader.inverse_transpose_batch(dial_batch))
+
+        if cfg.record_mode:
+            self.reader.record_utterance(result_collection)
+            quit()
+        results, field = self.reader.wrap_result(result_collection)
+        self.reader.save_result('w', results, field)
+
+        metric_results = self.evaluator.run_metrics(results)
+        metric_field = list(metric_results[0].keys())
+        req_slots_acc = metric_results[0]['req_slots_acc']
+        info_slots_acc = metric_results[0]['info_slots_acc']
+
+        self.reader.save_result('w', metric_results, metric_field,
+                                            write_title='EVALUATION RESULTS:')
+        self.reader.save_result('a', [info_slots_acc], list(info_slots_acc.keys()),
+                                            write_title='INFORM ACCURACY OF EACH SLOTS:')
+        self.reader.save_result('a', [req_slots_acc], list(req_slots_acc.keys()),
+                                            write_title='REQUEST SUCCESS RESULTS:')
+        self.reader.save_result('a', results, field+['wrong_domain', 'wrong_act', 'wrong_inform'],
+                                            write_title='DECODED RESULTS:')
+        self.reader.save_result_report(metric_results)
+        # self.reader.metric_record(metric_results)
+        self.m.train()
+        return None
+
+    def train_filter(self):
+        self.domain_num = len(cfg.source_domain)
+        lr = cfg.lr
+        prev_min_loss, early_stop_count = 1 << 30, cfg.early_stop_count
+        weight_decay_count = cfg.weight_decay_count
+        train_time = 0
+        sw = time.time()
+
+        #################### initialize the filter ###########################
+        self.filter = DAMD(self.reader)
+        if torch.cuda.is_available():
+            self.filter.cuda()
+        self.filter_lr = 0.01
+        self.filter_optimizer = Adam(self.filter.parameters(), lr=self.filter_lr)
+
+        for epoch in range(cfg.epoch_num):
+            if epoch <= self.base_epoch:
+                continue
+            sup_loss = 0
+            sup_cnt = 0
+            optim = self.optim
+            # data_iterator generatation size: (batch num, turn num, batch size)
+            btm = time.time()
+
+            turn_batches_domain = self.reader.mini_batch_iterator_maml_supervised('train')
+
+            # optim = Adam(lr=lr, params=filter(lambda x: x.requires_grad, self.m.parameters()),weight_decay=1e-5)
+            # meta_optim = Adam(lr = lr, params=filter(lambda x: x.requires_grad, self.m.parameters()),weight_decay=1e-5)
+            optim = Adam(lr=lr, params=self.m.parameters(),weight_decay=1e-5)
+            meta_optim = Adam(lr = lr, params=self.m.parameters(),weight_decay=1e-5)
+
+            for turn_num, turn_batch_domain in enumerate(turn_batches_domain):
+                hidden_states = {}
+                py_prev = {'pv_resp': None, 'pv_bspn': None, 'pv_aspn': None, 'pv_dspn': None, 'pv_bsdx': None}
+                bgt = time.time()
+
+                loss_doms = []
+                losses_doms = []
+                filter_grad = []
+                init_state = copy.deepcopy(self.m.state_dict())
+                for k in range(self.domain_num):
+                # for k-th task:
+                    turn_batch = turn_batch_domain[k]
+
+                    self.m.load_state_dict(init_state)
+                    optim.zero_grad()
+
+
+                    first_turn = 1#(turn_num==0)
+                    inputs = self.reader.convert_batch(turn_batch, py_prev, first_turn=first_turn)
+                    inputs = self.add_torch_input(inputs, first_turn=first_turn)
+                    # total_loss, losses, hidden_states = self.m(inputs, hidden_states, first_turn, mode='train')
+                    # print('forward completed')
+                    py_prev['pv_resp'] = turn_batch['resp']
+                    if cfg.enable_bspn:
+                        py_prev['pv_bspn'] = turn_batch['bspn']
+                        py_prev['pv_bsdx'] = turn_batch['bsdx']
+                    if cfg.enable_aspn:
+                        py_prev['pv_aspn'] = turn_batch['aspn']
+                    if cfg.enable_dspn:
+                        py_prev['pv_dspn'] = turn_batch['dspn']
+
+
+                    total_loss, losses = self.m(inputs, hidden_states, first_turn, mode='train')
+
+                    total_loss = total_loss.mean()
+
+                    # for p in self.m.parameters():
+                    #     grad = torch.autograd.grad(total_loss, p, retain_graph=True, allow_unused=True)
+                    #     if grad is None:
+                    #         pdb.set_trace()
+                    # pdb.set_trace()
+
+                    total_loss.backward()
+                    torch.nn.utils.clip_grad_norm_(self.m.parameters(), 5.0)
+
+                    # tmp = [p for p in self.m.parameters()]
+                    # pdb.set_trace()
+
+                    params_gen = [p.grad.data if p.grad is not None else None for p in self.m.parameters()]
+                    # # apply filter to gradient
+                    for p, q in zip(self.m.parameters(), self.filter.parameters()):
+                        if p.grad is not None:
+                            p.grad.data = p.grad.data * q.data
+                    optim.step()
+
+                    optim.zero_grad()
+                    total_loss, losses = self.m(inputs, hidden_states, first_turn, mode='train')
+                    total_loss = total_loss.mean()
+                    total_loss.backward()
+                    #? torch.nn.utils.clip_grad_norm_(self.m.parameters(), 5.0)
+                    params_spe = [p.grad.data if p.grad is not None else None for p in self.m.parameters()]
+
+                    loss_doms.append(total_loss)
+                    losses_doms.append(losses)
+
+                    # # update filter
+                    if len(filter_grad) == 0:
+                        filter_grad = [- j * k if j is not None else None for j, k in zip(params_gen, params_spe)]
+                    elif len(filter_grad) == len(params_gen):
+                        filter_grad = [i - j * k if j is not None else None for i, j, k in zip(filter_grad, params_gen, params_spe)]
+                    else:
+                        raise ValueError("Invalid filter gradient: dimension mismatch")
+
+                self.filter_optimizer.zero_grad()
+                for i, j in zip(self.filter.parameters(), filter_grad):
+                    i.grad = copy.deepcopy(j)
+                self.filter_optimizer.step()
+
+                # # update meta 
+                self.m.load_state_dict(init_state)
+                meta_optim.zero_grad()
+                loss_meta = torch.stack(loss_doms).sum(0) / self.domain_num
+                loss_meta.backward()
+                grad = torch.nn.utils.clip_grad_norm_(self.m.parameters(), 5.0)
+                meta_optim.step()
+
+                losses_meta = defaultdict(float)
+                for losses in losses_doms:
+                    for part in losses:
+                        losses_meta[part] += float(losses[part])
+                for part in losses_meta:
+                    losses_meta[part] /= self.domain_num
+
+                sup_loss += float(loss_meta)
+                sup_cnt += 1
+                torch.cuda.empty_cache()
+
+                if (turn_num+1)%cfg.report_interval==0:
+                    logging.info(
+                            'iter:{} [total|bspn|aspn|resp] loss: {:.2f} {:.2f} {:.2f} {:.2f} grad:{:.2f} time: {:.1f} turn:{} '.format(turn_num+1,
+                                                                           float(loss_meta),
+                                                                           float(losses_meta[cfg.bspn_mode]),float(losses_meta['aspn']),float(losses_meta['resp']),
+                                                                           grad,
+                                                                           time.time()-btm,
+                                                                           turn_num+1))
+                    if cfg.enable_dst and cfg.bspn_mode == 'bsdx':
+                        logging.info('bspn-dst:{:.3f}'.format(float(losses['bspn'])))
+                    if cfg.multi_acts_training:
+                        logging.info('aspn-aug:{:.3f}'.format(float(losses['aspn_aug'])))
+
+            epoch_sup_loss = sup_loss / (sup_cnt + 1e-8)
+            valid_loss = self.validate_maml()
+            logging.info('epoch: %d, train loss: %.3f, valid loss: %.3f, total time: %.1fmin' % (epoch+1, epoch_sup_loss,
+                    valid_loss, (time.time()-sw)/60))
+            if valid_loss <= prev_min_loss:
+                early_stop_count = cfg.early_stop_count
+                weight_decay_count = cfg.weight_decay_count
+                prev_min_loss = valid_loss
+                self.save_model(epoch)
+            else:
+                early_stop_count -= 1
+                weight_decay_count -= 1
+                logging.info('epoch: %d early stop countdown %d' % (epoch+1, early_stop_count))
+                if not early_stop_count:
+                    return
+                if not weight_decay_count:
+                    lr *= cfg.lr_decay
+                    self.optim = Adam(lr=lr, params=filter(lambda x: x.requires_grad, self.m.parameters()),
+                                  weight_decay=5e-5)
+                    weight_decay_count = cfg.weight_decay_count
+                    logging.info('learning rate decay, learning rate: %f' % (lr))
+
+    def validate_filter(self, data='dev', do_test=False):
+        valid_loss, count = 0, 0
+        data_iterator = self.reader.mini_batch_iterator_maml_supervised('dev')
+        result_collection = {}
+        optim = self.optim
+        init_state = copy.deepcopy(self.m.state_dict())
+
+        for dial_batch in data_iterator:
+            turn_states = {}
+            hidden_states = {}
+            py_prev = {'pv_resp': None, 'pv_bspn': None, 'pv_aspn':None, 'pv_dspn': None, 'pv_bsdx': None}
+            for turn_num, turn_batch in enumerate(dial_batch):
+
+                self.m.load_state_dict(init_state)
+
+                first_turn = (turn_num==0)
+                inputs = self.reader.convert_batch(turn_batch, py_prev, first_turn=first_turn)
+                inputs = self.add_torch_input(inputs, first_turn=first_turn)
+
+                total_loss, losses = self.m(inputs, hidden_states, first_turn, mode='train')
+                total_loss = total_loss.mean()
+                total_loss.backward()
+                grad = torch.nn.utils.clip_grad_norm_(self.m.parameters(), 5.0)
+                for p, q in zip(self.m.parameters(), self.filter.parameters()):
+                    if p.grad is not None:
+                        p.grad.data = p.grad.data * q.data
+                optim.step()
+
+                if cfg.valid_loss not in ['score', 'match', 'success', 'bleu']:
+                    total_loss, losses = self.m(inputs, hidden_states, first_turn, mode='train')
+                    py_prev['pv_resp'] = turn_batch['resp']
+                    if cfg.enable_bspn:
+                        py_prev['pv_bspn'] = turn_batch['bspn']
+                        py_prev['pv_bsdx'] = turn_batch['bsdx']
+                    if cfg.enable_aspn:
+                        py_prev['pv_aspn'] = turn_batch['aspn']
+                    if cfg.enable_dspn:
+                        py_prev['pv_dspn'] = turn_batch['dspn']
+
+                    if cfg.valid_loss == 'total_loss':
+                        valid_loss += float(total_loss)
+                    elif cfg.valid_loss == 'bspn_loss':
+                        valid_loss += float(losses[cfg.bspn_mode])
+                    elif cfg.valid_loss == 'aspn_loss':
+                        valid_loss += float(losses['aspn'])
+                    elif cfg.valid_loss == 'resp_loss':
+                        valid_loss += float(losses['reps'])
+                    else:
+                        raise ValueError('Invalid validation loss type!')
+                else:
+                    decoded = self.m(inputs, hidden_states, first_turn, mode='test')
+                    turn_batch['resp_gen'] = decoded['resp']
+                    if cfg.bspn_mode == 'bspn' or cfg.enable_dst:
+                        turn_batch['bspn_gen'] = decoded['bspn']
+                    py_prev['pv_resp'] = turn_batch['resp'] if cfg.use_true_pv_resp else decoded['resp']
+                    if cfg.enable_bspn:
+                        py_prev['pv_'+cfg.bspn_mode] = turn_batch[cfg.bspn_mode] if cfg.use_true_prev_bspn else decoded[cfg.bspn_mode]
+                        py_prev['pv_bspn'] = turn_batch['bspn'] if cfg.use_true_prev_bspn or 'bspn' not in decoded else decoded['bspn']
+                    if cfg.enable_aspn:
+                        py_prev['pv_aspn'] = turn_batch['aspn'] if cfg.use_true_prev_aspn else decoded['aspn']
+                    if cfg.enable_dspn:
+                        py_prev['pv_dspn'] = turn_batch['dspn'] if cfg.use_true_prev_dspn else decoded['dspn']
+                count += 1
+                torch.cuda.empty_cache()
+
+            if cfg.valid_loss in ['score', 'match', 'success', 'bleu']:
+                result_collection.update(self.reader.inverse_transpose_batch(dial_batch))
+
+        if cfg.valid_loss not in ['score', 'match', 'success', 'bleu']:
+            valid_loss /= (count + 1e-8)
+        else:
+            results, _ = self.reader.wrap_result(result_collection)
+            bleu, success, match = self.evaluator.validation_metric(results)
+            score = 0.5 * (success + match) + bleu
+            valid_loss = 130 - score
+            logging.info('validation [CTR] match: %2.1f  success: %2.1f  bleu: %2.1f'%(match, success, bleu))
+        return valid_loss
+
+    def adapt_filter(self):
+        lr = cfg.lr
+        prev_min_loss, early_stop_count = 1 << 30, cfg.early_stop_count
+        weight_decay_count = cfg.weight_decay_count
+        train_time = 0
+        sw = time.time()
+
+        for epoch in range(cfg.epoch_num):
+            if epoch <= self.base_epoch:
+                continue
+            sup_loss = 0
+            sup_cnt = 0
+            optim = self.optim
+            # data_iterator generatation size: (batch num, turn num, batch size)
+            btm = time.time()
+            turn_batches_domain = self.reader.mini_batch_iterator_maml_supervised('adapt')
+            for iter_num, dial_batch in enumerate(turn_batches_domain):
+                hidden_states = {}
+                py_prev = {'pv_resp': None, 'pv_bspn': None, 'pv_aspn':None, 'pv_dspn': None, 'pv_bsdx': None}
+                bgt = time.time()
+                for turn_num, turn_batch in enumerate(dial_batch):
+                    # print('turn %d'%turn_num)
+                    # print(len(turn_batch['dial_id']))
+                    optim.zero_grad()
+                    first_turn = (turn_num==0)
+                    inputs = self.reader.convert_batch(turn_batch, py_prev, first_turn=first_turn)
+                    inputs = self.add_torch_input(inputs, first_turn=first_turn)
+                    # total_loss, losses, hidden_states = self.m(inputs, hidden_states, first_turn, mode='train')
+                    total_loss, losses = self.m(inputs, hidden_states, first_turn, mode='train')
+
+                    # print('forward completed')
+                    py_prev['pv_resp'] = turn_batch['resp']
+                    if cfg.enable_bspn:
+                        py_prev['pv_bspn'] = turn_batch['bspn']
+                        py_prev['pv_bsdx'] = turn_batch['bsdx']
+                    if cfg.enable_aspn:
+                        py_prev['pv_aspn'] = turn_batch['aspn']
+                    if cfg.enable_dspn:
+                        py_prev['pv_dspn'] = turn_batch['dspn']
+
+                    total_loss = total_loss.mean()
+                    total_loss.backward(retain_graph=False)
+                    grad = torch.nn.utils.clip_grad_norm_(self.m.parameters(), 5.0)
+                    for p, q in zip(self.m.parameters(), self.filter.parameters()):
+                        if p.grad is not None:
+                            p.grad.data = p.grad.data * q.data
+                            
+                    optim.step()
+                    sup_loss += float(total_loss)
+                    sup_cnt += 1
+                    torch.cuda.empty_cache()
+
+                if (iter_num+1)%cfg.report_interval==0:
+                    logging.info(
+                            'iter:{} [total|bspn|aspn|resp] loss: {:.2f} {:.2f} {:.2f} {:.2f} grad:{:.2f} time: {:.1f} turn:{} '.format(iter_num+1,
+                                                                           float(total_loss),
+                                                                           float(losses[cfg.bspn_mode]),float(losses['aspn']),float(losses['resp']),
+                                                                           grad,
+                                                                           time.time()-btm,
+                                                                           turn_num+1))
+                    if cfg.enable_dst and cfg.bspn_mode == 'bsdx':
+                        logging.info('bspn-dst:{:.3f}'.format(float(losses['bspn'])))
+                    if cfg.multi_acts_training:
+                        logging.info('aspn-aug:{:.3f}'.format(float(losses['aspn_aug'])))
+
+            epoch_sup_loss = sup_loss / (sup_cnt + 1e-8)
+            logging.info('epoch: %d, train loss: %.3f, total time: %.1fmin' % (epoch+1, epoch_sup_loss, (time.time()-sw)/60))
+
+            if epoch_sup_loss <= prev_min_loss:
+                early_stop_count = cfg.early_stop_count
+                weight_decay_count = cfg.weight_decay_count
+                prev_min_loss = epoch_sup_loss
+                self.save_model(epoch)
+            else:
+                early_stop_count -= 1
+                weight_decay_count -= 1
+                logging.info('epoch: %d early stop countdown %d' % (epoch+1, early_stop_count))
+                if not early_stop_count:
+                    # self.load_model()
+                    # print('result preview...')
+                    # file_handler = logging.FileHandler(os.path.join(cfg.exp_path, 'eval_log%s.json'%cfg.seed))
+                    # logging.getLogger('').addHandler(file_handler)
+                    # logging.info(str(cfg))
+                    # self.eval()
+                    return
+                if not weight_decay_count:
+                    lr *= cfg.lr_decay
+                    self.optim = Adam(lr=lr, params=filter(lambda x: x.requires_grad, self.m.parameters()),
+                                  weight_decay=5e-5)
+                    weight_decay_count = cfg.weight_decay_count
+                    logging.info('learning rate decay, learning rate: %f' % (lr))
+        # self.load_model()
+        # print('result preview...')
+        # file_handler = logging.FileHandler(os.path.join(cfg.exp_path, 'eval_log%s.json'%cfg.seed))
+        # logging.getLogger('').addHandler(file_handler)
+        # logging.info(str(cfg))
+        # self.eval_maml(data='test')
+
     def save_model(self, epoch, path=None, critical=False):
         if not cfg.save_log:
             return
@@ -726,14 +1097,12 @@ class Model(object):
                             cfg.glove_path, self.reader.vocab, initial_arr))
             self.m.module.embedding.weight.data.copy_(emb)
 
-
     def count_params(self):
         module_parameters = filter(lambda p: p.requires_grad, self.m.parameters())
         param_cnt = int(sum([np.prod(p.size()) for p in module_parameters]))
 
         print('total trainable params: %d' % param_cnt)
         return param_cnt
-
 
 def parse_arg_cfg(args):
     if args.cfg:
@@ -781,8 +1150,8 @@ def main():
             cfg.result_path = os.path.join(cfg.eval_load_path, 'result.csv')
     else:
         parse_arg_cfg(args)
-        if cfg.exp_path in ['' , 'to be generated']:
-            cfg.exp_path = 'experiments/maml_{}_{}_sd{}_lr{}_bs{}_sp{}_dc{}/'.format('-'.join(cfg.exp_domains),
+        if not os.path.exists(cfg.exp_path):
+            cfg.exp_path = 'experiments/filter_{}_{}_sd{}_lr{}_bs{}_sp{}_dc{}/'.format('-'.join(cfg.exp_domains),
                                                                                             cfg.exp_no, cfg.seed, cfg.lr, cfg.batch_size,
                                                                                             cfg.early_stop_count, cfg.weight_decay_count)
             if cfg.save_log and not os.path.exists(cfg.exp_path):
@@ -803,6 +1172,9 @@ def main():
             torch.cuda.set_device(cfg.cuda_device[0])
         logging.info('Device: {}'.format(torch.cuda.current_device()))
 
+
+    cfg.eval_load_path ='experiments/filter_all_no_aug_sd333_lr0.005_bs32_sp5_dc3'
+
     torch.manual_seed(cfg.seed)
     torch.cuda.manual_seed(cfg.seed)
     random.seed(cfg.seed)
@@ -811,17 +1183,30 @@ def main():
     cfg.model_parameters = m.count_params()
     logging.info(str(cfg))
 
+    # if args.mode == 'train':
+    #     if cfg.save_log:
+    #         m.reader.vocab.save_vocab(cfg.vocab_path_eval)
+    #         with open(os.path.join(cfg.exp_path, 'config.json'), 'w') as f:
+    #             json.dump(cfg.__dict__, f, indent=2)
+    #     # m.load_glove_embedding()
+    #     m.train_maml()
+
+    # elif args.mode == 'test':
+    #     m.load_model(cfg.model_path)
+    #     m.adapt()
+    #     m.eval_maml(data='test')
+
     if args.mode == 'train':
         if cfg.save_log:
             m.reader.vocab.save_vocab(cfg.vocab_path_eval)
             with open(os.path.join(cfg.exp_path, 'config.json'), 'w') as f:
                 json.dump(cfg.__dict__, f, indent=2)
-        # m.load_glove_embedding()
-        m.train_maml()
+        m.load_glove_embedding()
+        m.train_filter()
 
     elif args.mode == 'test':
         m.load_model(cfg.model_path)
-        m.adapt(data='adapt')
+        m.adapt()
         m.eval_maml(data='test')
 
 
