@@ -31,14 +31,23 @@ class _Config:
         self.vocab_path_eval = None
         self.data_path = './data/multi-woz-processed/'
 
+        self.domains = [
+                        'attraction',
+                        'train',
+                        'taxi',
+                        'restaurant',
+                        'hospital',
+                        'hotel',
+                        'police'
+                        ]
         self.source_domain = [
-                            'train',
-                            'taxi',
-                            'restaurant',
-                            'hospital',
-                            'hotel',
-                            'police'
-                            ]
+                                'train',
+                                'taxi',
+                                'restaurant',
+                                'hospital',
+                                'hotel',
+                                'police'
+                                ]
         self.target_domain = 'attraction'
         self.train_data_file = ['data_in_domain_' + domain + '.json' for domain in self.source_domain]
         self.adapt_data_file = 'minor_data_in_domain_' + self.target_domain + '.json'
@@ -68,7 +77,7 @@ class _Config:
         self.mode = 'unknown'
         self.cuda = True
         self.cuda_device = [1]
-        self.exp_no = ''
+        self.exp_no = 'no_aug'
         self.seed = 0
         self.exp_domains = ['all']
         self.save_log = True
@@ -93,7 +102,7 @@ class _Config:
         self.enable_aspn = True
         self.use_pvaspn = False
         self.enable_bspn = True
-        self.bspn_mode = 'bsdx' # 'bspn' or 'bsdx'
+        self.bspn_mode = 'bspn' # 'bspn' or 'bsdx'
         self.enable_dspn = False # removed
         self.enable_dst = False
 
@@ -101,9 +110,9 @@ class _Config:
         self.lr = 0.005
         self.label_smoothing = .0
         self.lr_decay = 0.5
-        self.batch_size = 128
-        self.epoch_num = 100
-        self.early_stop_count = 5
+        self.batch_size = 32
+        self.epoch_num = 200
+        self.early_stop_count = 10
         self.weight_decay_count = 3
         self.teacher_force = 100
         self.multi_acts_training = False
@@ -111,17 +120,17 @@ class _Config:
         self.valid_loss = 'score'
 
         # evaluation settings
-        # self.eval_load_path ='experiments/maml_all_no_aug_sd333_lr0.005_bs32_sp5_dc3'
-        self.eval_load_path ='experiments/filter_all_no_aug_sd333_lr0.005_bs32_sp5_dc3'
+        # self.eval_load_path ='experiments/maml2_all_no_aug_sd333_lr0.005_bs32_sp5_dc3'
+        self.eval_load_path ='experiments/filter3_all_no_aug_sd333_lr0.005_bs32_sp5_dc3'
         self.eval_per_domain = False
         self.use_true_pv_resp = True
         self.use_true_prev_bspn = False
         self.use_true_prev_aspn = False
-        self.use_true_prev_dspn = False
+        self.use_true_prev_dspn = True
         self.use_true_curr_bspn = False
         self.use_true_curr_aspn = False
         self.use_true_bspn_for_ctr_eval = False
-        self.use_true_domain_for_ctr_eval = False
+        self.use_true_domain_for_ctr_eval = True
         self.use_true_db_pointer = False
         self.limit_bspn_vocab = False
         self.limit_aspn_vocab = False

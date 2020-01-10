@@ -550,7 +550,6 @@ class Regression():
                                                    file_name.split('.png')[0] + 
                                                    '.pkl', 'wb'))
 
-
     def train_filter(self):
         if not os.path.exists(self.model_dir):
             os.makedirs(self.model_dir)

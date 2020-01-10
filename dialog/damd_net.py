@@ -104,7 +104,6 @@ class Attn(nn.Module):
         energy = self.v(energy).transpose(1,2)   # [B,1,T]
         return energy
 
-
 class LayerNormalization(nn.Module):
     """ Layer normalization module """
 
@@ -122,7 +121,6 @@ class LayerNormalization(nn.Module):
         ln_out = (z - mu.expand_as(z)) / (sigma.expand_as(z) + self.eps)
         ln_out = ln_out * self.a_2.expand_as(ln_out) + self.b_2.expand_as(ln_out)
         return ln_out
-
 
 class MultiLayerGRUwithLN(nn.Module):
     """multi-layer GRU with layer normalization """
@@ -181,7 +179,6 @@ class MultiLayerGRUwithLN(nn.Module):
         hs = torch.cat(hs, 0)
         return in_l, hs
 
-
 class biGRUencoder(nn.Module):
     def __init__(self, embedding):
         super().__init__()
@@ -212,7 +209,6 @@ class biGRUencoder(nn.Module):
         outputs = outputs[:, :, :self.hidden_size] + outputs[:, :, self.hidden_size:]
         return outputs, hidden
 
-
 class Copy(nn.Module):
     def __init__(self, hidden_size, copy_weight=1.):
         super().__init__()
@@ -231,7 +227,6 @@ class Copy(nn.Module):
         raw_cp_score = torch.tanh(self.Wcopy(enc_out_hs))   #[B,Tenc,H]
         raw_cp_score = torch.einsum('beh,bdh->bde',raw_cp_score, dec_hs)    #[B, Tdec, Tenc]
         return raw_cp_score * self.copy_weight
-
 
 # def get_final_scores(raw_scores, word_onehot_input, input_idx_oov, vocab_size_oov):
 #     """
@@ -530,8 +525,6 @@ class BeliefSpanDecoder(nn.Module):
 
         return probs
 
-
-
 class ActSpanDecoder(nn.Module):
     def __init__(self, embedding, vocab_size_oov, Wgen = None, dropout=0.):
         super().__init__()
@@ -702,8 +695,6 @@ class ActSpanDecoder(nn.Module):
 
         return probs
 
-
-
 class ResponseDecoder(nn.Module):
     def __init__(self, embedding, vocab_size_oov, Wgen = None, dropout=0.):
         super().__init__()
@@ -823,7 +814,6 @@ class ResponseDecoder(nn.Module):
         probs = get_final_scores(raw_scores, word_onehot_input, input_idx_oov, self.vsize_oov)
 
         return probs
-
 
 class ActSelectionModel(nn.Module):
     def __init__(self, hidden_size, length, nbest):

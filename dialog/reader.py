@@ -270,10 +270,21 @@ class _ReaderBase(object):
             setting = 'topk=%s'%str(cfg.topk_num)
         elif cfg.aspn_decode_mode == 'nucleur_sampling':
             setting = 'p=%s'%str(cfg.nucleur_p)
-        res = {'exp': cfg.eval_load_path, 'true_bspn':cfg.use_true_curr_bspn, 'true_aspn': cfg.use_true_curr_aspn,
-                  'decode': cfg.aspn_decode_mode, 'param':setting, 'nbest': cfg.nbest, 'selection_sheme': cfg.act_selection_scheme,
-                  'match': results[0]['match'], 'success': results[0]['success'], 'bleu': results[0]['bleu'], 'act_f1': results[0]['act_f1'],
-                  'avg_act_num': results[0]['avg_act_num'], 'avg_diverse': results[0]['avg_diverse_score']}
+        res = {'exp': cfg.eval_load_path,
+               'true_bspn':cfg.use_true_curr_bspn,
+               'true_aspn': cfg.use_true_curr_aspn,
+               'decode': cfg.aspn_decode_mode,
+               'param':setting,
+               'nbest': cfg.nbest,
+               'selection_sheme': cfg.act_selection_scheme,
+               'match': results[0]['match'],
+               'success': results[0]['success'],
+               'bleu': results[0]['bleu'],
+               'act_f1': results[0]['act_f1'],
+               'avg_act_num': results[0]['avg_act_num'],
+               'avg_diverse': results[0]['avg_diverse_score'],
+               'slot_acc': results[0]['slot_acc'],
+               'slot_f1': results[0]['slot_f1']}
         with open(ctr_save_path, 'a') as rf:
             writer = csv.DictWriter(rf, fieldnames=list(res.keys()))
             if write_title:

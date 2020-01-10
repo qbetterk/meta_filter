@@ -226,6 +226,7 @@ class Model(object):
         weight_decay_count = cfg.weight_decay_count
         train_time = 0
         sw = time.time()
+        adapt_model_path = cfg.model_path.split('.pkl')[0] + '_adapt.pkl'
 
         for epoch in range(cfg.epoch_num):
             if epoch <= self.base_epoch:
@@ -287,18 +288,12 @@ class Model(object):
                 early_stop_count = cfg.early_stop_count
                 weight_decay_count = cfg.weight_decay_count
                 prev_min_loss = epoch_sup_loss
-                self.save_model(epoch)
+                self.save_model(epoch, path = adapt_model_path)
             else:
                 early_stop_count -= 1
                 weight_decay_count -= 1
                 logging.info('epoch: %d early stop countdown %d' % (epoch+1, early_stop_count))
                 if not early_stop_count:
-                    # self.load_model()
-                    # print('result preview...')
-                    # file_handler = logging.FileHandler(os.path.join(cfg.exp_path, 'eval_log%s.json'%cfg.seed))
-                    # logging.getLogger('').addHandler(file_handler)
-                    # logging.info(str(cfg))
-                    # self.eval()
                     return
                 if not weight_decay_count:
                     lr *= cfg.lr_decay
@@ -306,12 +301,6 @@ class Model(object):
                                   weight_decay=5e-5)
                     weight_decay_count = cfg.weight_decay_count
                     logging.info('learning rate decay, learning rate: %f' % (lr))
-        # self.load_model()
-        # print('result preview...')
-        # file_handler = logging.FileHandler(os.path.join(cfg.exp_path, 'eval_log%s.json'%cfg.seed))
-        # logging.getLogger('').addHandler(file_handler)
-        # logging.info(str(cfg))
-        # self.eval_maml(data='test')
 
     def validate(self, data='dev', do_test=False):
         self.m.eval()
@@ -790,7 +779,7 @@ class Model(object):
                     #         pdb.set_trace()
                     # pdb.set_trace()
 
-                    total_loss.backward()
+                    total_loss.backward(retain_graph=True)
                     torch.nn.utils.clip_grad_norm_(self.m.parameters(), 5.0)
 
                     # tmp = [p for p in self.m.parameters()]
@@ -806,7 +795,7 @@ class Model(object):
                     optim.zero_grad()
                     total_loss, losses = self.m(inputs, hidden_states, first_turn, mode='train')
                     total_loss = total_loss.mean()
-                    total_loss.backward()
+                    total_loss.backward(retain_graph=True)
                     #? torch.nn.utils.clip_grad_norm_(self.m.parameters(), 5.0)
                     params_spe = [p.grad.data if p.grad is not None else None for p in self.m.parameters()]
 
@@ -830,7 +819,7 @@ class Model(object):
                 self.m.load_state_dict(init_state)
                 meta_optim.zero_grad()
                 loss_meta = torch.stack(loss_doms).sum(0) / self.domain_num
-                loss_meta.backward()
+                loss_meta.backward(retain_graph=True)
                 grad = torch.nn.utils.clip_grad_norm_(self.m.parameters(), 5.0)
                 meta_optim.step()
 
@@ -964,6 +953,7 @@ class Model(object):
         weight_decay_count = cfg.weight_decay_count
         train_time = 0
         sw = time.time()
+        adapt_model_path = cfg.model_path.split('.pkl')[0] + '_adapt.pkl'
 
         for epoch in range(cfg.epoch_num):
             if epoch <= self.base_epoch:
@@ -999,7 +989,7 @@ class Model(object):
                         py_prev['pv_dspn'] = turn_batch['dspn']
 
                     total_loss = total_loss.mean()
-                    total_loss.backward(retain_graph=False)
+                    total_loss.backward(retain_graph=True)
                     grad = torch.nn.utils.clip_grad_norm_(self.m.parameters(), 5.0)
                     for p, q in zip(self.m.parameters(), self.filter.parameters()):
                         if p.grad is not None:
@@ -1030,18 +1020,12 @@ class Model(object):
                 early_stop_count = cfg.early_stop_count
                 weight_decay_count = cfg.weight_decay_count
                 prev_min_loss = epoch_sup_loss
-                self.save_model(epoch)
+                self.save_model(epoch, path = adapt_model_path)
             else:
                 early_stop_count -= 1
                 weight_decay_count -= 1
                 logging.info('epoch: %d early stop countdown %d' % (epoch+1, early_stop_count))
                 if not early_stop_count:
-                    # self.load_model()
-                    # print('result preview...')
-                    # file_handler = logging.FileHandler(os.path.join(cfg.exp_path, 'eval_log%s.json'%cfg.seed))
-                    # logging.getLogger('').addHandler(file_handler)
-                    # logging.info(str(cfg))
-                    # self.eval()
                     return
                 if not weight_decay_count:
                     lr *= cfg.lr_decay
@@ -1049,12 +1033,7 @@ class Model(object):
                                   weight_decay=5e-5)
                     weight_decay_count = cfg.weight_decay_count
                     logging.info('learning rate decay, learning rate: %f' % (lr))
-        # self.load_model()
-        # print('result preview...')
-        # file_handler = logging.FileHandler(os.path.join(cfg.exp_path, 'eval_log%s.json'%cfg.seed))
-        # logging.getLogger('').addHandler(file_handler)
-        # logging.info(str(cfg))
-        # self.eval_maml(data='test')
+
 
     def save_model(self, epoch, path=None, critical=False):
         if not cfg.save_log:
@@ -1131,19 +1110,24 @@ def main():
     parser.add_argument('-cfg', nargs='*')
     args = parser.parse_args()
 
-    cfg.mode = args.mode
+    if '_' in args.mode:
+        cfg.mode = args.mode.split('_')[0]
+    else:
+        cfg.mode = args.mode
+
     if args.mode == 'test' or args.mode=='adjust':
         parse_arg_cfg(args)
         cfg_load = json.loads(open(os.path.join(cfg.eval_load_path, 'config.json'), 'r').read())
         for k, v in cfg_load.items():
-            if k in ['mode', 'cuda', 'cuda_device', 'eval_load_path', 'eval_per_domain', 'use_true_pv_resp',
-                        'use_true_prev_bspn','use_true_prev_aspn','use_true_curr_bspn','use_true_curr_aspn',
-                        'name_slot_unable', 'book_slot_unable','count_req_dials_only','log_time', 'model_path',
-                        'result_path', 'model_parameters', 'multi_gpu', 'use_true_bspn_for_ctr_eval', 'nbest',
-                        'limit_bspn_vocab', 'limit_aspn_vocab', 'same_eval_as_cambridge', 'beam_width',
-                        'use_true_domain_for_ctr_eval', 'use_true_prev_dspn', 'aspn_decode_mode',
-                        'beam_diverse_param', 'same_eval_act_f1_as_hdsa', 'topk_num', 'nucleur_p',
-                        'act_selection_scheme', 'beam_penalty_type', 'record_mode']:
+            # if k in ['mode', 'cuda', 'cuda_device', 'eval_load_path', 'eval_per_domain', 'use_true_pv_resp',
+            #             'use_true_prev_bspn','use_true_prev_aspn','use_true_curr_bspn','use_true_curr_aspn',
+            #             'name_slot_unable', 'book_slot_unable','count_req_dials_only','log_time', 'model_path',
+            #             'result_path', 'model_parameters', 'multi_gpu', 'use_true_bspn_for_ctr_eval', 'nbest',
+            #             'limit_bspn_vocab', 'limit_aspn_vocab', 'same_eval_as_cambridge', 'beam_width',
+            #             'use_true_domain_for_ctr_eval', 'use_true_prev_dspn', 'aspn_decode_mode',
+            #             'beam_diverse_param', 'same_eval_act_f1_as_hdsa', 'topk_num', 'nucleur_p',
+            #             'act_selection_scheme', 'beam_penalty_type', 'record_mode']:
+            if k in dir(cfg):
                 continue
             setattr(cfg, k, v)
             cfg.model_path = os.path.join(cfg.eval_load_path, 'model.pkl')
@@ -1151,9 +1135,9 @@ def main():
     else:
         parse_arg_cfg(args)
         if not os.path.exists(cfg.exp_path):
-            cfg.exp_path = 'experiments/filter_{}_{}_sd{}_lr{}_bs{}_sp{}_dc{}/'.format('-'.join(cfg.exp_domains),
-                                                                                            cfg.exp_no, cfg.seed, cfg.lr, cfg.batch_size,
-                                                                                            cfg.early_stop_count, cfg.weight_decay_count)
+            cfg.exp_path = 'experiments/filter3_{}_{}_sd{}_lr{}_bs{}_sp{}_dc{}/'.format('-'.join(cfg.exp_domains),
+                                                                    cfg.exp_no, cfg.seed, cfg.lr, cfg.batch_size,
+                                                                    cfg.early_stop_count, cfg.weight_decay_count)
             if cfg.save_log and not os.path.exists(cfg.exp_path):
                 os.mkdir(cfg.exp_path)
             cfg.model_path = os.path.join(cfg.exp_path, 'model.pkl')
@@ -1172,9 +1156,6 @@ def main():
             torch.cuda.set_device(cfg.cuda_device[0])
         logging.info('Device: {}'.format(torch.cuda.current_device()))
 
-
-    cfg.eval_load_path ='experiments/filter_all_no_aug_sd333_lr0.005_bs32_sp5_dc3'
-
     torch.manual_seed(cfg.seed)
     torch.cuda.manual_seed(cfg.seed)
     random.seed(cfg.seed)
@@ -1183,26 +1164,41 @@ def main():
     cfg.model_parameters = m.count_params()
     logging.info(str(cfg))
 
-    # if args.mode == 'train':
-    #     if cfg.save_log:
-    #         m.reader.vocab.save_vocab(cfg.vocab_path_eval)
-    #         with open(os.path.join(cfg.exp_path, 'config.json'), 'w') as f:
-    #             json.dump(cfg.__dict__, f, indent=2)
-    #     # m.load_glove_embedding()
-    #     m.train_maml()
-
-    # elif args.mode == 'test':
-    #     m.load_model(cfg.model_path)
-    #     m.adapt()
-    #     m.eval_maml(data='test')
-
     if args.mode == 'train':
         if cfg.save_log:
             m.reader.vocab.save_vocab(cfg.vocab_path_eval)
             with open(os.path.join(cfg.exp_path, 'config.json'), 'w') as f:
                 json.dump(cfg.__dict__, f, indent=2)
         m.load_glove_embedding()
+        m.train()
+
+        m.eval(data='test')
+
+    if args.mode == 'train_maml':
+        if cfg.save_log:
+            m.reader.vocab.save_vocab(cfg.vocab_path_eval)
+            with open(os.path.join(cfg.exp_path, 'config.json'), 'w') as f:
+                json.dump(cfg.__dict__, f, indent=2)
+        m.load_glove_embedding()
+        m.train_maml()
+
+        m.load_model(cfg.model_path)
+        m.adapt()
+        m.eval_maml(data='test')
+
+
+    if args.mode == 'train_filter':
+        if cfg.save_log:
+            m.reader.vocab.save_vocab(cfg.vocab_path_eval)
+            with open(os.path.join(cfg.exp_path, 'config.json'), 'w') as f:
+                json.dump(cfg.__dict__, f, indent=2)
+        m.load_glove_embedding()
         m.train_filter()
+
+        m.load_model(cfg.model_path)
+        m.adapt()
+        m.eval_maml(data='test')
+
 
     elif args.mode == 'test':
         m.load_model(cfg.model_path)
