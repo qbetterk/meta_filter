@@ -246,18 +246,6 @@ class _ReaderBase(object):
         return None
 
     def save_result_report(self, results):
-        # if 'joint_goal' in results[0]:
-        #     with open(cfg.result_path[:-4] + '_report_dst.txt', 'w') as rf:
-        #         rf.write('joint goal\tslot_acc\tslot_f1\tact_f1\n')
-        #         for res in results:
-        #             a,b,c,d = res['joint_goal'], res['slot_acc'], res['slot_f1'], res['act_f1']
-        #             rf.write('%2.1f\t%2.1f\t%2.1f\t%2.1f\n'%(a,b,c,d))
-        # elif 'joint_goal_delex' in results[0]:
-        #     with open(cfg.result_path[:-4] + '_report_bsdx.txt', 'w') as rf:
-        #         rf.write('joint goal\tslot_acc\tslot_f1\tact_f1\n')
-        #         for res in results:
-        #             a,b,c,d = res['joint_goal_delex'], res['slot_acc_delex'], res['slot_f1_delex'], res['act_f1']
-        #             rf.write('%2.1f\t%2.1f\t%2.1f\t%2.1f\n'%(a,b,c,d))
         ctr_save_path = cfg.result_path[:-4] + '_report_ctr%s.csv'%cfg.seed
         write_title = False if os.path.exists(ctr_save_path) else True
         if cfg.aspn_decode_mode == 'greedy':

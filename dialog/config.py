@@ -78,7 +78,7 @@ class _Config:
         self.cuda = True
         self.cuda_device = [1]
         self.exp_no = 'no_aug'
-        self.seed = 0
+        self.seed = 333
         self.exp_domains = ['all']
         self.save_log = True
         self.report_interval = 5
@@ -93,7 +93,7 @@ class _Config:
         self.pointer_dim = 6 # fixed
         self.enc_layer_num = 1
         self.dec_layer_num = 1
-        self.dropout = 0
+        self.dropout = 0.3
         self.layer_norm = False
         self.skip_connect = False
         self.encoder_share = False
@@ -107,12 +107,13 @@ class _Config:
         self.enable_dst = False
 
         # training settings
-        self.lr = 0.005
+        self.lr = 0.003
+        self.meta_lr = 0.001
         self.label_smoothing = .0
         self.lr_decay = 0.5
         self.batch_size = 32
-        self.epoch_num = 200
-        self.early_stop_count = 10
+        self.epoch_num = 500
+        self.early_stop_count = 5
         self.weight_decay_count = 3
         self.teacher_force = 100
         self.multi_acts_training = False
@@ -120,8 +121,9 @@ class _Config:
         self.valid_loss = 'score'
 
         # evaluation settings
+        self.eval_load_path = ''
         # self.eval_load_path ='experiments/maml2_all_no_aug_sd333_lr0.005_bs32_sp5_dc3'
-        self.eval_load_path ='experiments/filter3_all_no_aug_sd333_lr0.005_bs32_sp5_dc3'
+        # self.eval_load_path ='experiments/filter3_all_no_aug_sd333_lr0.005_bs32_sp5_dc3'
         self.eval_per_domain = False
         self.use_true_pv_resp = True
         self.use_true_prev_bspn = False

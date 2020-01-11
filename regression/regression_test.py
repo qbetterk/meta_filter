@@ -201,8 +201,8 @@ def numpy_to_var(batch_idx, batch_size, last_batch=True, domain=0, **kwargs):
 
 class Regression():
     def __init__(self):
-        self.lr = 0.01
-        self.meta_lr = 0.01
+        self.lr = 0.0001
+        self.meta_lr = 0.001
         self.epoch_num = 50001
         self.val_period = 500
         self.batch_size = 20
@@ -406,21 +406,37 @@ class Regression():
                 self.model.load_state_dict(val_init_state)
 
                 print('epoch {}, meta loss {:f}, validation loss {:f}'.format(epoch, meta_loss.item(), val_losses.item()))
-                # torch.save(self.model.state_dict(), './model/maml_earlystop.pkl')
-                torch.save(self.model.state_dict(), os.path.join(self.model_dir, 'epoch_' + str(epoch) + '.pkl'))
-                # print(type(meta_loss.item()))
+                # torch.save(self.model.state_dict(), os.path.join(self.model_dir, 'epoch_' + str(epoch) + '.pkl'))
 
-                # if abs(self.pre_val_loss - val_losses.item()) < 1e-5:
+                if abs(self.pre_val_loss - val_losses.item()) < 1e-5:
+                    self.ear_stop_num -= 1
+                else:
+                    self.ear_stop_num = 5
+                    self.pre_val_loss = val_losses.item()
+
+                if self.ear_stop_num == 0 or val_losses.item() < 1e-4:
+                    break
+
+                if val_losses.item() < self.min_val_loss:
+                    torch.save(self.model.state_dict(), os.path.join(self.model_dir, 'best_epoch_' + str(epoch) + '.pkl'))
+                    torch.save(self.filter.state_dict(), os.path.join(self.model_dir, 'best_epoch_' + str(epoch) + '_filter.pkl'))
+                    self.min_val_loss = val_losses.item()
+                    converge_step_left = self.ear_stop_num
+                else:
+                    converge_step_left -= 1
+
+                # # judge whether to stop
+                # if abs(self.pre_val_loss - val_losses.item()) < 1e-4 * val_losses.item():
                 #     self.ear_stop_num -= 1
                 # else:
                 #     self.ear_stop_num = 5
 
                 #     self.pre_val_loss = val_losses.item()
 
-                # if self.ear_stop_num == 0 or val_losses.item() < 1e-4:
-                #     break
+                if converge_step_left == 0 or val_losses.item() < 1e-4:
+                    return
 
-        # torch.save(self.model.state_dict(), './model/maml_earlystop.pkl')
+        torch.save(self.model.state_dict(), './model/maml_earlystop.pkl')
 
     def test(self):
         with torch.no_grad(): 
@@ -642,8 +658,6 @@ class Regression():
 
                 val_losses = torch.stack(val_loss_tasks).sum(0) / d_sour_num
                 self.model.load_state_dict(val_init_state)
-
-                # print('epoch {}, meta loss {:f}, validation loss {:f}'.format(epoch, meta_loss.item(), val_losses.item()))
 
                 # # save the model with the lowest validation loss
                 if val_losses.item() < self.min_val_loss:
