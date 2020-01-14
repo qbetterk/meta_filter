@@ -1120,8 +1120,11 @@ def main():
     else:
         cfg.mode = args.mode
 
+    parse_arg_cfg(args)
+    cfg.source_domain = cfg.domains[:]
+    cfg.source_domain.remove(cfg.target_domain)
+
     if args.mode == 'test' or args.mode=='adjust':
-        parse_arg_cfg(args)
         cfg_load = json.loads(open(os.path.join(cfg.eval_load_path, 'config.json'), 'r').read())
         for k, v in cfg_load.items():
             if k in dir(cfg):
@@ -1130,8 +1133,6 @@ def main():
             cfg.model_path = os.path.join(cfg.eval_load_path, 'model.pkl')
             cfg.result_path = os.path.join(cfg.eval_load_path, 'result.csv')
     else:
-        parse_arg_cfg(args)
-
         if '_' in args.mode:
             alg = args.mode.split('_')[-1]
 
