@@ -399,14 +399,10 @@ class Regression():
                     # # record loss for diff domains
                     val_loss_tasks.append(val_loss)
 
-                    # inputs, labels = numpy_to_var(0, batch_size, x=val_x, y=val_y, domain=dom)
-                    # predicted = model(inputs)
-
                 val_losses = torch.stack(val_loss_tasks).sum(0) / d_sour_num
                 self.model.load_state_dict(val_init_state)
 
                 print('epoch {}, meta loss {:f}, validation loss {:f}'.format(epoch, meta_loss.item(), val_losses.item()))
-                # torch.save(self.model.state_dict(), os.path.join(self.model_dir, 'epoch_' + str(epoch) + '.pkl'))
 
                 if abs(self.pre_val_loss - val_losses.item()) < 1e-5:
                     self.ear_stop_num -= 1

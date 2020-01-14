@@ -93,7 +93,7 @@ class _Config:
         self.pointer_dim = 6 # fixed
         self.enc_layer_num = 1
         self.dec_layer_num = 1
-        self.dropout = 0.3
+        self.dropout = 0
         self.layer_norm = False
         self.skip_connect = False
         self.encoder_share = False
@@ -107,8 +107,9 @@ class _Config:
         self.enable_dst = False
 
         # training settings
-        self.lr = 0.003
-        self.meta_lr = 0.001
+        self.lr = 0.005
+        self.meta_lr = 0.005
+        self.filter_lr = 0.005
         self.label_smoothing = .0
         self.lr_decay = 0.5
         self.batch_size = 32

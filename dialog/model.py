@@ -709,6 +709,10 @@ class Model(object):
     def train_filter(self):
         self.domain_num = len(cfg.source_domain)
         lr = cfg.lr
+        meta_lr = cfg.meta_lr
+        self.optim = Adam(lr=lr, params=self.m.parameters(),weight_decay=1e-5)
+        self.meta_optim = Adam(lr = meta_lr, params=self.m.parameters(),weight_decay=1e-5)
+
         prev_min_loss, early_stop_count = 1 << 30, cfg.early_stop_count
         weight_decay_count = cfg.weight_decay_count
         train_time = 0
@@ -718,8 +722,8 @@ class Model(object):
         self.filter = DAMD(self.reader)
         if torch.cuda.is_available():
             self.filter.cuda()
-        self.filter_lr = 0.01
-        self.filter_optimizer = Adam(self.filter.parameters(), lr=self.filter_lr)
+        filter_lr = cfg.filter_lr
+        self.filter_optimizer = Adam(self.filter.parameters(), lr=filter_lr)
 
         for epoch in range(cfg.epoch_num):
             if epoch <= self.base_epoch:
@@ -727,6 +731,7 @@ class Model(object):
             sup_loss = 0
             sup_cnt = 0
             optim = self.optim
+            meta_optim = self.meta_optim
             # data_iterator generatation size: (batch num, turn num, batch size)
             btm = time.time()
 
@@ -734,8 +739,6 @@ class Model(object):
 
             # optim = Adam(lr=lr, params=filter(lambda x: x.requires_grad, self.m.parameters()),weight_decay=1e-5)
             # meta_optim = Adam(lr = lr, params=filter(lambda x: x.requires_grad, self.m.parameters()),weight_decay=1e-5)
-            optim = Adam(lr=lr, params=self.m.parameters(),weight_decay=1e-5)
-            meta_optim = Adam(lr = lr, params=self.m.parameters(),weight_decay=1e-5)
 
             for turn_num, turn_batch_domain in enumerate(turn_batches_domain):
                 hidden_states = {}
@@ -753,12 +756,10 @@ class Model(object):
                     self.m.load_state_dict(init_state)
                     optim.zero_grad()
 
-
                     first_turn = 1#(turn_num==0)
                     inputs = self.reader.convert_batch(turn_batch, py_prev, first_turn=first_turn)
                     inputs = self.add_torch_input(inputs, first_turn=first_turn)
-                    # total_loss, losses, hidden_states = self.m(inputs, hidden_states, first_turn, mode='train')
-                    # print('forward completed')
+
                     py_prev['pv_resp'] = turn_batch['resp']
                     if cfg.enable_bspn:
                         py_prev['pv_bspn'] = turn_batch['bspn']
@@ -773,17 +774,8 @@ class Model(object):
 
                     total_loss = total_loss.mean()
 
-                    # for p in self.m.parameters():
-                    #     grad = torch.autograd.grad(total_loss, p, retain_graph=True, allow_unused=True)
-                    #     if grad is None:
-                    #         pdb.set_trace()
-                    # pdb.set_trace()
-
                     total_loss.backward(retain_graph=True)
                     torch.nn.utils.clip_grad_norm_(self.m.parameters(), 5.0)
-
-                    # tmp = [p for p in self.m.parameters()]
-                    # pdb.set_trace()
 
                     params_gen = [p.grad.data if p.grad is not None else None for p in self.m.parameters()]
                     # # apply filter to gradient
@@ -855,7 +847,7 @@ class Model(object):
                 early_stop_count = cfg.early_stop_count
                 weight_decay_count = cfg.weight_decay_count
                 prev_min_loss = valid_loss
-                self.save_model(epoch)
+                self.save_model(epoch, _filter=True)
             else:
                 early_stop_count -= 1
                 weight_decay_count -= 1
@@ -864,7 +856,13 @@ class Model(object):
                     return
                 if not weight_decay_count:
                     lr *= cfg.lr_decay
+                    meta_lr *= cfg.lr_decay
+                    filter_lr *= cfg.lr_decay
                     self.optim = Adam(lr=lr, params=filter(lambda x: x.requires_grad, self.m.parameters()),
+                                  weight_decay=5e-5)
+                    self.meta_optim = Adam(lr=meta_lr, params=filter(lambda x: x.requires_grad, self.m.parameters()),
+                                  weight_decay=5e-5)
+                    self.filter_lr = Adam(lr=filter_lr, params=filter(lambda x: x.requires_grad, self.m.parameters()),
                                   weight_decay=5e-5)
                     weight_decay_count = cfg.weight_decay_count
                     logging.info('learning rate decay, learning rate: %f' % (lr))
@@ -1020,7 +1018,7 @@ class Model(object):
                 early_stop_count = cfg.early_stop_count
                 weight_decay_count = cfg.weight_decay_count
                 prev_min_loss = epoch_sup_loss
-                self.save_model(epoch, path = adapt_model_path)
+                self.save_model(epoch, path = adapt_model_path, _filter=True)
             else:
                 early_stop_count -= 1
                 weight_decay_count -= 1
@@ -1035,7 +1033,7 @@ class Model(object):
                     logging.info('learning rate decay, learning rate: %f' % (lr))
 
 
-    def save_model(self, epoch, path=None, critical=False):
+    def save_model(self, epoch, path=None, critical=False, _filter=False):
         if not cfg.save_log:
             return
         if not path:
@@ -1045,15 +1043,22 @@ class Model(object):
         all_state = {'lstd': self.m.state_dict(),
                      'config': cfg.__dict__,
                      'epoch': epoch}
+        if _filter:
+            all_state['filter'] = self.filter.state_dict()
         torch.save(all_state, path)
         logging.info('Model saved')
 
-    def load_model(self, path=None):
+    def load_model(self, path=None, _filter=False):
         if not path:
             path = cfg.model_path
         all_state = torch.load(path, map_location='cpu')
         self.m.load_state_dict(all_state['lstd'])
         self.base_epoch = all_state.get('epoch', 0)
+        if _filter:
+            self.filter = DAMD(self.reader)
+            if torch.cuda.is_available():
+                self.filter.cuda()
+            self.filter.load_state_dict(all_state['filter'])
         logging.info('Model loaded')
 
     def freeze_module(self, module):
@@ -1119,14 +1124,6 @@ def main():
         parse_arg_cfg(args)
         cfg_load = json.loads(open(os.path.join(cfg.eval_load_path, 'config.json'), 'r').read())
         for k, v in cfg_load.items():
-            # if k in ['mode', 'cuda', 'cuda_device', 'eval_load_path', 'eval_per_domain', 'use_true_pv_resp',
-            #             'use_true_prev_bspn','use_true_prev_aspn','use_true_curr_bspn','use_true_curr_aspn',
-            #             'name_slot_unable', 'book_slot_unable','count_req_dials_only','log_time', 'model_path',
-            #             'result_path', 'model_parameters', 'multi_gpu', 'use_true_bspn_for_ctr_eval', 'nbest',
-            #             'limit_bspn_vocab', 'limit_aspn_vocab', 'same_eval_as_cambridge', 'beam_width',
-            #             'use_true_domain_for_ctr_eval', 'use_true_prev_dspn', 'aspn_decode_mode',
-            #             'beam_diverse_param', 'same_eval_act_f1_as_hdsa', 'topk_num', 'nucleur_p',
-            #             'act_selection_scheme', 'beam_penalty_type', 'record_mode']:
             if k in dir(cfg):
                 continue
             setattr(cfg, k, v)
@@ -1139,10 +1136,9 @@ def main():
             alg = args.mode.split('_')[-1]
 
         if not os.path.exists(cfg.exp_path):
-            cfg.exp_path = 'experiments/' + alg + \
-                        '_{}_{}_sd{}_lr{}_mlr{}_bs{}_sp{}_dc{}_dp{}/'.format('-'.join(cfg.exp_domains),
-                                            cfg.exp_no, cfg.seed, cfg.lr, cfg.meta_lr, cfg.batch_size,
-                                            cfg.early_stop_count, cfg.weight_decay_count, cfg.dropout)
+            cfg.exp_path = 'experiments/{}_{}_{}_sd{}_lr{}_mlr{}_flr{}_bs{}_sp{}_dc{}_dp{}/'.format(alg,
+                             '-'.join(cfg.exp_domains), cfg.exp_no, cfg.seed, cfg.lr, cfg.meta_lr, 
+                             cfg.filter_lr, cfg.batch_size, cfg.early_stop_count, cfg.weight_decay_count, cfg.dropout)
             if cfg.save_log and not os.path.exists(cfg.exp_path):
                 os.mkdir(cfg.exp_path)
             cfg.model_path = os.path.join(cfg.exp_path, 'model.pkl')
@@ -1200,8 +1196,8 @@ def main():
         m.load_glove_embedding()
         m.train_filter()
 
-        m.load_model(cfg.model_path)
-        m.adapt()
+        m.load_model(cfg.model_path, _filter=True)
+        m.adapt_filter()
         m.eval_maml(data='test')
 
 
