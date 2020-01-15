@@ -862,7 +862,7 @@ class Model(object):
                                   weight_decay=5e-5)
                     self.meta_optim = Adam(lr=meta_lr, params=filter(lambda x: x.requires_grad, self.m.parameters()),
                                   weight_decay=5e-5)
-                    self.filter_lr = Adam(lr=filter_lr, params=filter(lambda x: x.requires_grad, self.m.parameters()),
+                    self.filter_optimizer = Adam(lr=filter_lr, params=filter(lambda x: x.requires_grad, self.m.parameters()),
                                   weight_decay=5e-5)
                     weight_decay_count = cfg.weight_decay_count
                     logging.info('learning rate decay, learning rate: %f' % (lr))
