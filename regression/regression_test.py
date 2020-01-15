@@ -659,6 +659,9 @@ class Regression():
                 val_losses = torch.stack(val_loss_tasks).sum(0) / cfg.d_sour_num
                 self.model.load_state_dict(val_init_state)
 
+                logging.info('epoch {}, meta loss {:f}, validation loss {:f}, total time: {:.1f}min'.format(epoch, 
+                                                            meta_loss.item(), val_losses.item(), (time.time()-sw)/60))
+
                 # # save the model with the lowest validation loss
                 if val_losses.item() < min_val_loss:
                     torch.save(self.model.state_dict(), self.model_path)
@@ -671,9 +674,6 @@ class Regression():
 
                 if converge_step_left == 0 or val_losses.item() < 1e-4:
                     return
-
-                logging.info('epoch {}, meta loss {:f}, validation loss {:f}, total time: {:.1f}min'.format(epoch, 
-                                                            meta_loss.item(), val_losses.item(), (time.time()-sw)/60))
 
     def test_filter(self):
         # # # check paths
@@ -727,15 +727,13 @@ class Regression():
                 test_losses.append(test_loss.item())
 
                 # # # # print log and plot
-                if epoch == 1: 
-                    logging.info('epoch {}, adapt_loss {}, test_loss {}'.format(epoch, adapt_loss.item(), test_loss.item()))
+                # if epoch % 1 == 0: 
+                logging.info('epoch {}, adapt_loss {}, test_loss {}'.format(epoch, adapt_loss.item(), test_loss.item()))
+                self.plot(outputs, os.path.join(output_sub_dir, file_name))
 
                 if adapt_loss.item() < min_val_loss:
                     min_val_loss = adapt_loss.item()
                     converge_step_left = self.ear_stop_num
-                    if epoch % 1 == 0: 
-                        logging.info('epoch {}, adapt_loss {}, test_loss {}'.format(epoch, adapt_loss.item(), test_loss.item()))
-                    self.plot(outputs, os.path.join(output_sub_dir, file_name))
                 else:
                     converge_step_left -= 1
                     logging.info('early stop countdown %d' % converge_step_left)
@@ -792,9 +790,9 @@ def main():
         os.mkdir('./experiments')
 
     if cfg.model_dir == '':
-        cfg.model_dir = 'experiments/{}_sd{}_lr{}_mlr{}_flr{}_sa{}_do{}_bs{}_sp{}/'.format(cfg.alg,
+        cfg.model_dir = 'experiments/{}_sd{}_lr{}_mlr{}_flr{}_sa{}_dn{}_sd{}_sp{}/'.format(cfg.alg,
                          cfg.seed, cfg.lr, cfg.meta_lr, cfg.filter_lr, cfg.sample_num,
-                         cfg.domain_num, cfg.batch_size, cfg.ear_stop_num)#, cfg.weight_decay_count)
+                         cfg.domain_num, cfg.d_sour_num, cfg.ear_stop_num)#, cfg.weight_decay_count)
 
     if cfg.mode == 'train':
         if not os.path.exists(cfg.model_dir):
