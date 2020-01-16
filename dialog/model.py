@@ -1137,8 +1137,8 @@ def main():
             alg = args.mode.split('_')[-1]
 
         if not os.path.exists(cfg.exp_path):
-            cfg.exp_path = 'experiments/{}_{}_{}_sd{}_lr{}_mlr{}_flr{}_bs{}_sp{}_dc{}_dp{}/'.format(alg,
-                             '-'.join(cfg.exp_domains), cfg.exp_no, cfg.seed, cfg.lr, cfg.meta_lr, 
+            cfg.exp_path = 'experiments/{}_{}_sd{}_lr{}_mlr{}_flr{}_bs{}_sp{}_dc{}_dp{}/'.format(alg,
+                             cfg.target_domain, cfg.seed, cfg.lr, cfg.meta_lr, 
                              cfg.filter_lr, cfg.batch_size, cfg.early_stop_count, cfg.weight_decay_count, cfg.dropout)
             if cfg.save_log and not os.path.exists(cfg.exp_path):
                 os.mkdir(cfg.exp_path)

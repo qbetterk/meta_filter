@@ -505,7 +505,7 @@ class Regression():
 
         for epoch in range(self.max_adapt_num + 1):
 
-            file_name = model_path.split('/')[-1].split('.')[0] + '_as' + str(epoch) + '.png'
+            file_name = 'adapt_step_' + str(epoch) + '.png'
             if epoch == 0:
                 # # # zero-shot
                 outputs, test_loss_avg = self.test()
@@ -821,7 +821,11 @@ def main():
             with open(os.path.join(cfg.model_dir, 'config.json'), 'w') as f:
                 json.dump(cfg.__dict__, f, indent=2)
         reg.train_maml()
+        reg.test_maml()
 
+    if args.mode == 'test_maml':
+        reg.test_maml()
+        
     if args.mode == 'train_filter':
         if cfg.save_log:
             with open(os.path.join(cfg.model_dir, 'config.json'), 'w') as f:

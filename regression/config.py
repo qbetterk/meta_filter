@@ -23,7 +23,7 @@ class _Config():
         self.ear_stop_num = 5
         self.ear_stop_num_test = 30
         self.min_val_loss = 1 << 30
-        self.max_adapt_num = 5000
+        self.max_adapt_num = 500
 
         self.mode = 'train'
         # self.alg = ''
