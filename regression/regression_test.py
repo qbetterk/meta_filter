@@ -182,6 +182,7 @@ class Regression():
 
         self.pre_val_loss = cfg.pre_val_loss
         self.ear_stop_num = cfg.ear_stop_num
+        self.ear_stop_num_test = cfg.ear_stop_num_test
         self.min_val_loss = cfg.min_val_loss
 
         self.model_dir = cfg.model_dir
@@ -340,8 +341,9 @@ class Regression():
         torch.save(self.model.state_dict(), './model/transfer.pkl')
 
     def train_maml(self):
-        if not os.path.exists(self.model_dir):
-            os.makedirs(self.model_dir)
+        converge_step_left = self.ear_stop_num
+        min_val_loss = self.min_val_loss
+        sw = time.time()
 
         ################## train #####################
         for epoch in range(self.epoch_num):
@@ -407,49 +409,41 @@ class Regression():
                 val_losses = torch.stack(val_loss_tasks).sum(0) / cfg.d_sour_num
                 self.model.load_state_dict(val_init_state)
 
-                print('epoch {}, meta loss {:f}, validation loss {:f}'.format(epoch, meta_loss.item(), val_losses.item()))
+                logging.info('epoch {}, meta loss {:f}, validation loss {:f}, total time: {:.1f}min'.format(epoch, 
+                                                            meta_loss.item(), val_losses.item(), (time.time()-sw)/60))
 
-                if abs(self.pre_val_loss - val_losses.item()) < 1e-5:
-                    self.ear_stop_num -= 1
-                else:
-                    self.ear_stop_num = 5
-                    self.pre_val_loss = val_losses.item()
-
-                if self.ear_stop_num == 0 or val_losses.item() < 1e-4:
-                    break
-
-                if val_losses.item() < self.min_val_loss:
-                    torch.save(self.model.state_dict(), os.path.join(self.model_dir, 'best_epoch_' + str(epoch) + '.pkl'))
-                    torch.save(self.filter.state_dict(), os.path.join(self.model_dir, 'best_epoch_' + str(epoch) + '_filter.pkl'))
-                    self.min_val_loss = val_losses.item()
+                # # save the model with the lowest validation loss
+                if val_losses.item() < min_val_loss:
+                    torch.save(self.model.state_dict(), self.model_path)
+                    min_val_loss = val_losses.item()
                     converge_step_left = self.ear_stop_num
                 else:
                     converge_step_left -= 1
-
-                # # judge whether to stop
-                # if abs(self.pre_val_loss - val_losses.item()) < 1e-4 * val_losses.item():
-                #     self.ear_stop_num -= 1
-                # else:
-                #     self.ear_stop_num = 5
-
-                #     self.pre_val_loss = val_losses.item()
+                    logging.info('early stop countdown %d' % converge_step_left)
 
                 if converge_step_left == 0 or val_losses.item() < 1e-4:
                     return
 
-        torch.save(self.model.state_dict(), './model/maml_earlystop.pkl')
-
     def test(self):
+        '''
+        return outputs
+               test_loss_avg
+        '''
+        outputs = []
+        test_losses = []
         with torch.no_grad(): 
         # we don't need gradients in the testing phase
-            if torch.cuda.is_available():
-                outputs = self.model(Variable(torch.from_numpy(self.test_x).cuda()))
-                labels = Variable(torch.from_numpy(self.test_y[0]).cuda())
-            else:
-                outputs = self.model(Variable(torch.from_numpy(self.test_x)))
-                labels = Variable(torch.from_numpy(self.test_y[0]))
-            test_loss = self.creiterion(outputs, labels)
-        return outputs, test_loss
+            for i in range(cfg.d_targ_num):
+                if torch.cuda.is_available():
+                    output = self.model(Variable(torch.from_numpy(self.test_x).cuda()))
+                    labels = Variable(torch.from_numpy(self.test_y[i]).cuda())
+                else:
+                    output = self.model(Variable(torch.from_numpy(self.test_x)))
+                    labels = Variable(torch.from_numpy(self.test_y[i]))
+                test_loss = self.creiterion(output, labels)
+                outputs.append(output)
+                test_losses.append(float(test_loss))
+        return outputs, sum(test_losses)/len(test_losses)
 
     def plot(self, outputs, file_path, mode = 'sin'):
         plt.figure()
@@ -470,7 +464,7 @@ class Regression():
 
         if mode == 'sin':
             plt.plot(self.test_x, self.test_y[0], 'bo', label = 'oracle')
-            plt.plot(self.test_x, outputs.data.cpu().numpy(), 'ro', label = 'predicted')
+            plt.plot(self.test_x, outputs[0].data.cpu().numpy(), 'ro', label = 'predicted')
             plt.plot(self.support_x, self.support_y[0], 'go', label = 'support point')
 
             title = file_path.split('.png')[0].split('_')[-1] + '_' + title
@@ -478,94 +472,87 @@ class Regression():
         elif mode == 'loss':
             for losses in outputs:
                 plt.plot(outputs[losses], label = losses)
-            plt.xlabel('adaptation step')
-            plt.ylabel('loss')
-            plt.ylim(0, 0.5)
+            plt.xlabel('Adaptation Step Number')
+            plt.ylabel('MSE')
+            # plt.ylim(0, 0.5)
             plt.title(title)
         plt.legend()
         plt.savefig(file_path)
         plt.close()
 
-    def test_adapt(self, model_path = None, output_dir = './result_pic/'):
+    def test_maml(self):
         # # # check paths
-        if model_path == None:
-            raise ValueError("Lack of model path")
-        if not os.path.exists(model_path):
+        if not os.path.exists(self.model_path):
             raise ValueError("Model path does not exist")
-        output_sub_dir = os.path.join(output_dir, '_val'+ str(cfg.val_num) +
-                                                  '_sup'+ str(cfg.support_num) +
-                                                  '_sa' + str(self.sample_num) + 
-                                                  '_bz' + str(self.batch_size) + 
-                                                  '_do' + str(self.domain_num) + 
-                                                  '_ep' + str(self.epoch_num)  +
-                                                  '_vp' + str(self.val_period))
+        output_dir = os.path.join(self.model_dir, 'result_pic/')
+        if not os.path.exists(output_dir):
+            os.mkdir(output_dir)
+        output_sub_dir = os.path.join(output_dir, 'support_num_' + str(cfg.support_num) + 
+                                                  '_target_dom_' + str(cfg.d_targ_num))
         if not os.path.exists(output_sub_dir):
             os.mkdir(output_sub_dir)
 
+        # # # load model
+        self.model.load_state_dict(torch.load(self.model_path))
+        
         # # # initilize parameters
-        self.ear_stop_num = 30
-        converge_step_left = self.ear_stop_num
-        pre_adapt_loss = 0
+        converge_step_left = self.ear_stop_num_test
+        pre_adapt_loss = self.pre_val_loss
+        min_val_loss = self.min_val_loss
         adapt_losses = []
         test_losses = []
+        optimizer = self.optimizer
 
-        # # # load model 
-        self.model.load_state_dict(torch.load(model_path)) 
-        
         for epoch in range(self.max_adapt_num + 1):
 
             file_name = model_path.split('/')[-1].split('.')[0] + '_as' + str(epoch) + '.png'
             if epoch == 0:
                 # # # zero-shot
-                outputs, test_loss = self.test()
-                print('epoch {}, adapt_loss {}, test_loss {}'.format(epoch, 0, test_loss.item()))
+                outputs, test_loss_avg = self.test()
+                print('epoch {}, adapt_loss {}, test_loss {}'.format(epoch, 0, test_loss_avg))
                 self.plot(outputs, os.path.join(output_sub_dir, file_name))
             else:
                 # # # adaptation 
                 inputs, labels = numpy_to_var(0, self.batch_size, x=self.support_x, y=self.support_y)
 
-                self.meta_optimizer.zero_grad()
+                optimizer.zero_grad()
                 outputs = self.model(inputs)
                 adapt_loss = self.creiterion(outputs, labels)
                 adapt_loss.backward()
-                self.meta_optimizer.step()
+                optimizer.step()
 
                 # # # test   
-                outputs, test_loss = self.test()
+                outputs, test_loss_avg = self.test()
 
                 # # # record the losses for the later plotting
                 adapt_losses.append(adapt_loss.item())
-                test_losses.append(test_loss.item())
+                test_losses.append(test_loss_avg)
 
-                if epoch == 1:
-                    print('epoch {}, adapt_loss {}, test_loss {}'.format(epoch, adapt_loss.item(), test_loss.item()))
+                # # # # print log and plot
+                logging.info('epoch {}, adapt_loss {}, test_loss {}'.format(epoch, adapt_loss.item(), test_loss_avg))
+                self.plot(outputs, os.path.join(output_sub_dir, file_name))
 
-                if adapt_loss.item() < self.min_val_loss:
-                    self.min_val_loss = adapt_loss.item()
+                if adapt_loss.item() < min_val_loss:
+                    min_val_loss = adapt_loss.item()
                     converge_step_left = self.ear_stop_num
-                    if epoch % 1 == 0:
-                        print('epoch {}, adapt_loss {}, test_loss {}'.format(epoch, adapt_loss.item(), test_loss.item()))
-                    self.plot(outputs, os.path.join(output_sub_dir, file_name))
                 else:
                     converge_step_left -= 1
-                    print('early stop countdown %d' % converge_step_left)
+                    logging.info('early stop countdown %d' % converge_step_left)
 
-                # # # when to stop early
                 if converge_step_left == 0:
                     break
                 if abs(adapt_loss.item() - pre_adapt_loss) / adapt_loss.item() < 1e-3:
+                    break
+                if abs(adapt_loss.item() - pre_adapt_loss) < 1e-3:
                     break
 
                 pre_adapt_loss = adapt_loss.item()
 
         self.plot({'adapt': adapt_losses, 'test': test_losses}, 
-                   os.path.join(output_sub_dir, 'test_loss_' + model_path.split('/')[-1].split('.')[0] + '.png'), 
-                   mode='loss')
+                   os.path.join(output_sub_dir, 'test_error.png'), mode='loss')
 
-        pkl.dump({'adapt': adapt_losses, 'test': test_losses}, open('./tmp/' + 
-                                                   self.model_dir.split('/')[-2] + '_' + 
-                                                   file_name.split('.png')[0] + 
-                                                   '.pkl', 'wb'))
+        pkl.dump({'adapt': adapt_losses, 'test': test_losses}, 
+                 open(os.path.join(output_sub_dir, 'test_error.pkl'), 'wb'))
 
     def train_filter(self):
         converge_step_left = self.ear_stop_num
@@ -576,10 +563,12 @@ class Regression():
         self.filter = reg_net()
         if torch.cuda.is_available():
             self.filter.cuda()
-        self.filter_optimizer = optim.Adam(self.filter.parameters(), lr=self.filter_lr)
+        filter_optimizer = optim.Adam(self.filter.parameters(), lr=self.filter_lr)
 
         ######################### train ###############################
         for epoch in range(self.epoch_num):
+            optimizer = self.optimizer
+            meta_optimizer = self.meta_optimizer
             sample_idx = np.random.choice(cfg.train_num, self.sample_num)
             for batch_idx in range(math.ceil(self.sample_num / self.batch_size)):
                 inputs = numpy_to_var(batch_idx, self.batch_size, x = self.train_x[sample_idx], \
@@ -594,7 +583,7 @@ class Regression():
                                           last_batch=(batch_idx == int(self.sample_num / self.batch_size)))
 
                     self.model.load_state_dict(init_state)
-                    self.optimizer.zero_grad()
+                    optimizer.zero_grad()
                     outputs = self.model(inputs)
                     loss = self.creiterion(outputs, labels)
                     loss.backward(retain_graph=True)
@@ -603,9 +592,9 @@ class Regression():
                     # # apply filter to gradient
                     for p, q in zip(self.model.parameters(), self.filter.parameters()):
                         p.grad.data = p.grad.data * q.data
-                    self.optimizer.step()
+                    optimizer.step()
 
-                    self.optimizer.zero_grad()
+                    optimizer.zero_grad()
                     outputs = self.model(inputs)
                     loss = self.creiterion(outputs, labels)
                     loss_tasks.append(loss)
@@ -620,17 +609,17 @@ class Regression():
                     else:
                         raise ValueError("Invalid filter gradient: dimension mismatch")
 
-                self.filter_optimizer.zero_grad()
+                filter_optimizer.zero_grad()
                 for i, j in zip(self.filter.parameters(), filter_grad):
                     i.grad = copy.deepcopy(j)
-                self.filter_optimizer.step()
+                filter_optimizer.step()
 
                 # # update meta 
                 self.model.load_state_dict(init_state)
-                self.meta_optimizer.zero_grad()
+                meta_optimizer.zero_grad()
                 meta_loss = torch.stack(loss_tasks).sum(0) / self.domain_num
                 meta_loss.backward()
-                self.meta_optimizer.step()
+                meta_optimizer.step()
 
             ######################### validation ############################
             if epoch % self.val_period == 0:
@@ -641,13 +630,13 @@ class Regression():
 
                     # # tmp-updated model for each domain
                     self.model.load_state_dict(val_init_state)
-                    self.optimizer.zero_grad()
+                    optimizer.zero_grad()
                     val_outputs = self.model(val_inputs)
                     val_loss = self.creiterion(val_outputs, val_labels)
                     val_loss.backward()
                     for p, q in zip(self.model.parameters(), self.filter.parameters()):
                         p.grad.data = p.grad.data * q.data
-                    self.optimizer.step()
+                    optimizer.step()
 
                     # # compute the loss of tmp-updated model
                     val_outputs = self.model(val_inputs)
@@ -678,11 +667,14 @@ class Regression():
     def test_filter(self):
         # # # check paths
         if not os.path.exists(self.model_path):
-            raise ValueError("Model path does not exist")
+            print(self.model_path)
+            pdb.set_trace()
+            raise ValueError("Model path: " + self.model_path + "does not exist")
         output_dir = os.path.join(self.model_dir, 'result_pic/')
         if not os.path.exists(output_dir):
             os.mkdir(output_dir)
-        output_sub_dir = os.path.join(output_dir, 'support_num_' + str(cfg.support_num))
+        output_sub_dir = os.path.join(output_dir, 'support_num_' + str(cfg.support_num) + 
+                                                  '_target_dom_' + str(cfg.d_targ_num))
         if not os.path.exists(output_sub_dir):
             os.mkdir(output_sub_dir)
 
@@ -694,41 +686,41 @@ class Regression():
         self.filter.load_state_dict(torch.load(self.filter_path))
         
         # # # initilize parameters
-        converge_step_left = self.ear_stop_num
+        converge_step_left = self.ear_stop_num_test
         pre_adapt_loss = self.pre_val_loss
         min_val_loss = self.min_val_loss
         adapt_losses = []
         test_losses = []
+        optimizer = self.optimizer
 
         for epoch in range(self.max_adapt_num + 1):
             file_name = 'adapt_step_' + str(epoch) + '.png'
             if epoch == 0:
                 # # # zero-shot
-                outputs, test_loss = self.test()
-                logging.info('epoch {}, adapt_loss {}, test_loss {}'.format(epoch, 0, test_loss.item()))
+                outputs, test_loss_avg = self.test()
+                logging.info('epoch {}, adapt_loss {}, test_loss {}'.format(epoch, 0, test_loss_avg))
                 self.plot(outputs, os.path.join(output_sub_dir, file_name))
             else:
                 # # # adaptation 
                 inputs, labels = numpy_to_var(0, self.batch_size, x=self.support_x, y=self.support_y)
 
-                self.meta_optimizer.zero_grad()
+                optimizer.zero_grad()
                 outputs = self.model(inputs)
                 adapt_loss = self.creiterion(outputs, labels)
                 adapt_loss.backward()
                 for p, q in zip(self.model.parameters(), self.filter.parameters()):
                     p.grad.data = p.grad.data * q.data
-                self.meta_optimizer.step()
+                optimizer.step()
 
                 # # # test   
-                outputs, test_loss = self.test()
+                outputs, test_loss_avg = self.test()
 
                 # # # record the losses for the later plotting
                 adapt_losses.append(adapt_loss.item())
-                test_losses.append(test_loss.item())
+                test_losses.append(test_loss_avg)
 
                 # # # # print log and plot
-                # if epoch % 1 == 0: 
-                logging.info('epoch {}, adapt_loss {}, test_loss {}'.format(epoch, adapt_loss.item(), test_loss.item()))
+                logging.info('epoch {}, adapt_loss {}, test_loss {}'.format(epoch, adapt_loss.item(), test_loss_avg))
                 self.plot(outputs, os.path.join(output_sub_dir, file_name))
 
                 if adapt_loss.item() < min_val_loss:
@@ -741,6 +733,8 @@ class Regression():
                 if converge_step_left == 0:
                     break
                 if abs(adapt_loss.item() - pre_adapt_loss) / adapt_loss.item() < 1e-3:
+                    break
+                if abs(adapt_loss.item() - pre_adapt_loss) < 1e-3:
                     break
 
                 pre_adapt_loss = adapt_loss.item()
@@ -790,9 +784,9 @@ def main():
         os.mkdir('./experiments')
 
     if cfg.model_dir == '':
-        cfg.model_dir = 'experiments/{}_sd{}_lr{}_mlr{}_flr{}_sa{}_dn{}_sd{}_sp{}/'.format(cfg.alg,
+        cfg.model_dir = 'experiments/{}_sd{}_lr{}_mlr{}_flr{}_sa{}_dn{}_sd{}_es{}_est{}/'.format(cfg.alg,
                          cfg.seed, cfg.lr, cfg.meta_lr, cfg.filter_lr, cfg.sample_num,
-                         cfg.domain_num, cfg.d_sour_num, cfg.ear_stop_num)#, cfg.weight_decay_count)
+                         cfg.domain_num, cfg.d_sour_num, cfg.ear_stop_num, cfg.ear_stop_num_test)
 
     if cfg.mode == 'train':
         if not os.path.exists(cfg.model_dir):
@@ -807,8 +801,11 @@ def main():
                 continue
             setattr(cfg, k, v)
 
-
     cfg._init_logging_handler(log_dir = cfg.model_dir)
+
+    if cfg.cuda:
+        torch.cuda.set_device(cfg.cuda_device)
+        logging.info('Device: {}'.format(torch.cuda.current_device()))
 
     random.seed(cfg.seed)
     np.random.seed(cfg.seed)

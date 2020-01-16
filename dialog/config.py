@@ -109,7 +109,7 @@ class _Config:
         # training settings
         self.lr = 0.005
         self.meta_lr = 0.005
-        self.filter_lr = 0.005
+        self.filter_lr = 0.01
         self.label_smoothing = .0
         self.lr_decay = 0.5
         self.batch_size = 32
@@ -122,7 +122,7 @@ class _Config:
         self.valid_loss = 'score'
 
         # evaluation settings
-        self.eval_load_path = ''
+        self.eval_load_path = 'experiments/filter_all_no_aug_sd333_lr0.005_mlr0.005_flr0.01_bs32_sp5_dc3_dp0/'
         # self.eval_load_path ='experiments/maml2_all_no_aug_sd333_lr0.005_bs32_sp5_dc3'
         # self.eval_load_path ='experiments/filter3_all_no_aug_sd333_lr0.005_bs32_sp5_dc3'
         self.eval_per_domain = False

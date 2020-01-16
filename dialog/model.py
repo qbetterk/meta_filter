@@ -856,8 +856,8 @@ class Model(object):
                     return
                 if not weight_decay_count:
                     lr *= cfg.lr_decay
-                    meta_lr *= cfg.lr_decay
-                    filter_lr *= cfg.lr_decay
+                    # meta_lr *= cfg.lr_decay
+                    # filter_lr *= cfg.lr_decay
                     self.optim = Adam(lr=lr, params=filter(lambda x: x.requires_grad, self.m.parameters()),
                                   weight_decay=5e-5)
                     self.meta_optim = Adam(lr=meta_lr, params=filter(lambda x: x.requires_grad, self.m.parameters()),

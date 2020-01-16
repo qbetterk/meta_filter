@@ -9,7 +9,7 @@ class _Config():
     def reg_init(self):
 
         self.seed = 0
-        self.lr = 0.0001
+        self.lr = 0.001
         self.meta_lr = 0.001
         self.filter_lr = 0.001
 
@@ -21,21 +21,25 @@ class _Config():
 
         self.pre_val_loss = 0
         self.ear_stop_num = 5
+        self.ear_stop_num_test = 30
         self.min_val_loss = 1 << 30
-        self.max_adapt_num = 500
+        self.max_adapt_num = 5000
 
         self.mode = 'train'
-        self.alg = ''
+        # self.alg = ''
         self.model_dir = ''
-        self.model_path = ''
-        self.filter_path = ''
+        # self.model_path = ''
+        # self.filter_path = ''
+
+        self.cuda = True
+        self.cuda_device = 2
 
         # # # params to generate data points
         self.d_sour_num = 20      # number of source domains
         self.d_targ_num = 1       # number of target domain
         self.train_num = 100     # number of training point in each domain
         self.val_num = 100
-        self.support_num = 10
+        self.support_num = 3
         self.test_num = 100
 
         # # # log file
