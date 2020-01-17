@@ -1123,6 +1123,9 @@ def main():
     parse_arg_cfg(args)
     cfg.source_domain = cfg.domains[:]
     cfg.source_domain.remove(cfg.target_domain)
+    cfg.train_data_file = ['data_in_domain_' + domain + '.json' for domain in cfg.source_domain]
+    cfg.adapt_data_file = 'minor_data_in_domain_' + cfg.target_domain + '.json'
+    cfg.test_data_file = 'data_in_domain_' + cfg.target_domain + '.json'
 
     if args.mode == 'test' or args.mode=='adjust':
         cfg_load = json.loads(open(os.path.join(cfg.eval_load_path, 'config.json'), 'r').read())
