@@ -109,7 +109,7 @@ class _Config:
         # training settings
         self.lr = 0.005
         self.meta_lr = 0.005
-        self.filter_lr = 0.01
+        self.filter_lr = 0.001
         self.label_smoothing = .0
         self.lr_decay = 0.5
         self.batch_size = 32
@@ -154,19 +154,13 @@ class _Config:
             s += '{} : {}\n'.format(k,v)
         return s
 
-
-    def _init_logging_handler(self, mode):
+    def _init_logging_handler(self, log_dir = './log'):
         stderr_handler = logging.StreamHandler()
-        if not os.path.exists('./log'):
-            os.mkdir('./log')
-        if self.save_log and self.mode == 'train':
-            file_handler = logging.FileHandler('./log/log_{}_{}_{}_{}_sd{}.txt'.format(self.log_time, mode, '-'.join(self.exp_domains), self.exp_no, self.seed))
-            logging.basicConfig(handlers=[stderr_handler, file_handler])
-        elif self.mode == 'test':
-            eval_log_path = os.path.join(self.eval_load_path, 'eval_log.json')
-            # if os.path.exists(eval_log_path):
-            #     os.remove(eval_log_path)
-            file_handler = logging.FileHandler(eval_log_path)
+        if not os.path.exists(log_dir):
+            os.mkdir(log_dir)
+        if self.save_log:
+            log_path = os.path.join(log_dir, 'log_{}_{}.txt'.format(self.mode, self.log_time))
+            file_handler = logging.FileHandler(log_path)
             logging.basicConfig(handlers=[stderr_handler, file_handler])
         else:
             logging.basicConfig(handlers=[stderr_handler])

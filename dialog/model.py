@@ -1150,7 +1150,7 @@ def main():
             cfg.vocab_path_eval = os.path.join(cfg.exp_path, 'vocab')
             cfg.eval_load_path = cfg.exp_path
 
-    cfg._init_logging_handler(args.mode)
+    cfg._init_logging_handler(log_dir = cfg.exp_path)
     if cfg.cuda:
         if len(cfg.cuda_device)==1:
             cfg.multi_gpu = False
