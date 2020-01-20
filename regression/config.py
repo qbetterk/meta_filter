@@ -13,20 +13,21 @@ class _Config():
         self.meta_lr = 0.001
         self.filter_lr = 0.001
 
+
         self.epoch_num = 50001
         self.val_period = 500
-        self.batch_size = 20
-        self.sample_num = 10
+        self.batch_size = 32
+        self.sample_num = 3
+        self.sample_num_val = 100
         self.domain_num = 15
 
         self.pre_val_loss = 0
-        self.ear_stop_num = 5
-        self.ear_stop_num_test = 30
         self.min_val_loss = 1 << 30
-        self.max_adapt_num = 500
+        self.ear_stop_num = 10
+        self.ear_stop_num_test = 30
+        self.max_adapt_num = 5000
 
         self.mode = 'train'
-        # self.alg = ''
         self.model_dir = ''
         # self.model_path = ''
         # self.filter_path = ''
@@ -37,14 +38,16 @@ class _Config():
         # # # params to generate data points
         self.d_sour_num = 20      # number of source domains
         self.d_targ_num = 1       # number of target domain
-        self.train_num = 100     # number of training point in each domain
-        self.val_num = 100
-        self.support_num = 3
+        self.train_num = 200     # number of training point in each domain
         self.test_num = 100
+        self.val_num = 100
+        self.support_num = self.sample_num
 
         # # # log file
         self.save_log = True
         self.log_time = time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime())
+
+
 
     def _init_logging_handler(self, log_dir = './log'):
         stderr_handler = logging.StreamHandler()

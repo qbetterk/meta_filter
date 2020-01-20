@@ -168,7 +168,8 @@ class Regression():
         self.epoch_num = cfg.epoch_num
         self.val_period = cfg.val_period
         self.batch_size = cfg.batch_size
-        self.sample_num = cfg.support_num
+        self.sample_num = cfg.sample_num
+        self.sample_num_val = cfg.sample_num_val
         self.domain_num = cfg.domain_num
 
         self.model = reg_net()
@@ -203,31 +204,31 @@ class Regression():
         """
 
         # cfg.d_sour_num = 20      # number of source domains
-        d_sour_a = [np.random.uniform(0.1, 5.0) for _ in range(cfg.d_sour_num)]
-        d_sour_b = [np.random.uniform(0, np.pi) for _ in range(cfg.d_sour_num)]
+        self.d_sour_a = [np.random.uniform(0.1, 5.0) for _ in range(cfg.d_sour_num)]
+        self.d_sour_b = [np.random.uniform(0, np.pi) for _ in range(cfg.d_sour_num)]
         # cfg.d_targ_num = 1       # number of target domain
-        d_targ_a = [np.random.uniform(0.1, 5.0) for _ in range(cfg.d_targ_num)]
-        d_targ_b = [np.random.uniform(0, np.pi) for _ in range(cfg.d_targ_num)]
+        self.d_targ_a = [np.random.uniform(0.1, 5.0) for _ in range(cfg.d_targ_num)]
+        self.d_targ_b = [np.random.uniform(0, np.pi) for _ in range(cfg.d_targ_num)]
 
 
         # cfg.train_num = 100     # number of training point in each domain
         self.train_x   = np.array([np.random.uniform(-5.0, 5.0) for _ in range(cfg.train_num)], dtype=np.float32).reshape(-1,1)
-        self.train_y   = np.array([[d_sour_a[j] * np.sin(i + d_sour_b[j]) for i in self.train_x] for j in range(cfg.d_sour_num)], dtype=np.float32).reshape(cfg.d_sour_num, cfg.train_num, 1)
+        self.train_y   = np.array([[self.d_sour_a[j] * np.sin(i + self.d_sour_b[j]) for i in self.train_x] for j in range(cfg.d_sour_num)], dtype=np.float32).reshape(cfg.d_sour_num, cfg.train_num, 1)
 
         # cfg.val_num = 100
         self.val_x   = np.array([np.random.uniform(-5.0, 5.0) for _ in range(cfg.val_num)], dtype=np.float32).reshape(-1,1)
-        self.val_y   = np.array([[d_sour_a[j] * np.sin(i + d_sour_b[j]) for i in self.val_x] for j in range(cfg.d_sour_num)], dtype=np.float32).reshape(cfg.d_sour_num, cfg.val_num, 1)
+        self.val_y   = np.array([[self.d_sour_a[j] * np.sin(i + self.d_sour_b[j]) for i in self.val_x] for j in range(cfg.d_sour_num)], dtype=np.float32).reshape(cfg.d_sour_num, cfg.val_num, 1)
 
         # cfg.support_num = 10
         self.support_x   = np.array([np.random.uniform(-5.0, 5.0) for _ in range(cfg.support_num)], dtype=np.float32).reshape(-1,1)
-        self.support_y   = np.array([[d_targ_a[j] * np.sin(i + d_targ_b[j]) for i in self.support_x] for j in range(cfg.d_targ_num)], dtype=np.float32).reshape(cfg.d_targ_num, cfg.support_num, 1)
+        self.support_y   = np.array([[self.d_targ_a[j] * np.sin(i + self.d_targ_b[j]) for i in self.support_x] for j in range(cfg.d_targ_num)], dtype=np.float32).reshape(cfg.d_targ_num, cfg.support_num, 1)
 
         # cfg.test_num = 100
         self.test_x   = np.array([np.random.uniform(-5.0, 5.0) for _ in range(cfg.test_num)], dtype=np.float32).reshape(-1,1)
-        self.test_y   = np.array([[d_targ_a[j] * np.sin(i + d_targ_b[j]) for i in self.test_x] for j in range(cfg.d_targ_num)], dtype=np.float32).reshape(cfg.d_targ_num, cfg.test_num, 1)
+        self.test_y   = np.array([[self.d_targ_a[j] * np.sin(i + self.d_targ_b[j]) for i in self.test_x] for j in range(cfg.d_targ_num)], dtype=np.float32).reshape(cfg.d_targ_num, cfg.test_num, 1)
 
         self.test_x_old  = np.array([np.random.uniform(-5.0, 5.0) for _ in range(cfg.test_num)], dtype=np.float32).reshape(-1,1)
-        self.test_y_old  = np.array([[d_sour_a[j] * np.sin(i + d_sour_b[j]) for i in self.test_x_old] for j in range(cfg.d_sour_num)], dtype=np.float32).reshape(cfg.d_sour_num, cfg.test_num, 1)
+        self.test_y_old  = np.array([[self.d_sour_a[j] * np.sin(i + self.d_sour_b[j]) for i in self.test_x_old] for j in range(cfg.d_sour_num)], dtype=np.float32).reshape(cfg.d_sour_num, cfg.test_num, 1)
 
     def count_params(self):
         module_parameters = filter(lambda p: p.requires_grad, self.model.parameters())
@@ -348,8 +349,11 @@ class Regression():
         ################## train #####################
         for epoch in range(self.epoch_num):
             sample_idx = np.random.choice(cfg.train_num, self.sample_num)
+            sample_idx_val = np.random.choice(cfg.train_num, self.sample_num_val)
             for batch_idx in range(math.ceil(self.sample_num / self.batch_size)):
                 inputs = numpy_to_var(batch_idx, self.batch_size, x=self.train_x[sample_idx], \
+                                      last_batch=(batch_idx == int(self.sample_num / self.batch_size)))
+                labels_val = numpy_to_var(batch_idx, self.batch_size, x=self.train_x[sample_idx_val], \
                                       last_batch=(batch_idx == int(self.sample_num / self.batch_size)))
 
                 init_state = copy.deepcopy(self.model.state_dict())
@@ -358,6 +362,8 @@ class Regression():
                 domain_idx = random.choices(range(cfg.d_sour_num), k = self.domain_num)
                 for dom in domain_idx:
                     labels = numpy_to_var(batch_idx, self.batch_size, domain=dom, y=self.train_y[:, sample_idx], \
+                                          last_batch=(batch_idx == int(self.sample_num / self.batch_size)))
+                    labels_val = numpy_to_var(batch_idx, self.batch_size, domain=dom, y=self.train_y[:, sample_idx_val], \
                                           last_batch=(batch_idx == int(self.sample_num / self.batch_size)))
 
                     # # tmp-updated model for each domain
@@ -369,11 +375,11 @@ class Regression():
                     self.optimizer.step()
 
                     # # compute the loss of tmp-updated model
-                    outputs = self.model(inputs)
-                    loss = self.creiterion(outputs, labels)
+                    outputs = self.model(labels_val)
+                    loss = self.creiterion(outputs, labels_val)
 
-                    # # record loss for diff domains
-                    loss_tasks.append(loss)
+                    # # record loss for diff domains with normalization
+                    loss_tasks.append(loss / self.d_sour_a[dom] ** 2)
 
                 self.model.load_state_dict(init_state)
                 self.meta_optimizer.zero_grad()
@@ -388,7 +394,7 @@ class Regression():
             if epoch % self.val_period == 0:
                 val_init_state = copy.deepcopy(self.model.state_dict())
                 val_loss_tasks = []
-                for dom in range(cfg.d_sour_num):
+                for dom in domain_idx:
                     val_inputs, val_labels = numpy_to_var(0, self.batch_size, x=self.val_x, y=self.val_y, domain=dom)
 
                     # # tmp-updated model for each domain
@@ -404,7 +410,7 @@ class Regression():
                     val_loss = self.creiterion(val_outputs, val_labels)
 
                     # # record loss for diff domains
-                    val_loss_tasks.append(val_loss)
+                    val_loss_tasks.append(val_loss / self.d_sour_a[dom] ** 2)
 
                 val_losses = torch.stack(val_loss_tasks).sum(0) / cfg.d_sour_num
                 self.model.load_state_dict(val_init_state)
@@ -415,13 +421,14 @@ class Regression():
                 # # save the model with the lowest validation loss
                 if val_losses.item() < min_val_loss:
                     torch.save(self.model.state_dict(), self.model_path)
+                    logging.info('mode saved')
                     min_val_loss = val_losses.item()
                     converge_step_left = self.ear_stop_num
                 else:
                     converge_step_left -= 1
                     logging.info('early stop countdown %d' % converge_step_left)
 
-                if converge_step_left == 0 or val_losses.item() < 1e-4:
+                if converge_step_left == 0 or val_losses.item() < 1e-5:
                     return
 
     def test(self):
@@ -429,21 +436,33 @@ class Regression():
         return outputs
                test_loss_avg
         '''
-        outputs = []
-        test_losses = []
+        # outputs = []
+        # test_losses = []
+        # with torch.no_grad(): 
+        # # we don't need gradients in the testing phase
+        #     for i in range(cfg.d_targ_num):
+        #         if torch.cuda.is_available():
+        #             output = self.model(Variable(torch.from_numpy(self.test_x).cuda()))
+        #             labels = Variable(torch.from_numpy(self.test_y[i]).cuda())
+        #         else:
+        #             output = self.model(Variable(torch.from_numpy(self.test_x)))
+        #             labels = Variable(torch.from_numpy(self.test_y[i]))
+        #         test_loss = self.creiterion(output, labels)
+        #         outputs.append(output)
+        #         test_losses.append(float(test_loss))
+        #     # # average with normalization
+        #     test_loss_avg = sum([test_losses[i] / self.d_targ_a[i] ** 2 for i in range(len(test_losses))]) / len(test_losses)
+        # return outputs, test_loss_avg
+
         with torch.no_grad(): 
-        # we don't need gradients in the testing phase
-            for i in range(cfg.d_targ_num):
-                if torch.cuda.is_available():
-                    output = self.model(Variable(torch.from_numpy(self.test_x).cuda()))
-                    labels = Variable(torch.from_numpy(self.test_y[i]).cuda())
-                else:
-                    output = self.model(Variable(torch.from_numpy(self.test_x)))
-                    labels = Variable(torch.from_numpy(self.test_y[i]))
-                test_loss = self.creiterion(output, labels)
-                outputs.append(output)
-                test_losses.append(float(test_loss))
-        return outputs, sum(test_losses)/len(test_losses)
+            if torch.cuda.is_available():
+                output = self.model(Variable(torch.from_numpy(self.test_x).cuda()))
+                labels = Variable(torch.from_numpy(self.test_y[0]).cuda())
+            else:
+                output = self.model(Variable(torch.from_numpy(self.test_x)))
+                labels = Variable(torch.from_numpy(self.test_y[0]))
+            test_loss = self.creiterion(output, labels)
+        return output, test_loss
 
     def plot(self, outputs, file_path, mode = 'sin'):
         plt.figure()
@@ -454,8 +473,7 @@ class Regression():
             model = 'filter'
 
         title = mode + '_' + model +             \
-                  '_val'+ str(cfg.val_num) +         \
-                  '_sup'+ str(cfg.support_num) +     \
+                  '_sup'+ str(cfg.support_num) + \
                   '_sa' + str(self.sample_num) + \
                   '_bz' + str(self.batch_size) + \
                   '_do' + str(self.domain_num) + \
@@ -464,7 +482,7 @@ class Regression():
 
         if mode == 'sin':
             plt.plot(self.test_x, self.test_y[0], 'bo', label = 'oracle')
-            plt.plot(self.test_x, outputs[0].data.cpu().numpy(), 'ro', label = 'predicted')
+            plt.plot(self.test_x, outputs.data.cpu().numpy(), 'ro', label = 'predicted')
             plt.plot(self.support_x, self.support_y[0], 'go', label = 'support point')
 
             title = file_path.split('.png')[0].split('_')[-1] + '_' + title
@@ -504,12 +522,11 @@ class Regression():
         optimizer = self.optimizer
 
         for epoch in range(self.max_adapt_num + 1):
-
             file_name = 'adapt_step_' + str(epoch) + '.png'
             if epoch == 0:
                 # # # zero-shot
-                outputs, test_loss_avg = self.test()
-                print('epoch {}, adapt_loss {}, test_loss {}'.format(epoch, 0, test_loss_avg))
+                outputs, test_loss = self.test()
+                print('epoch {}, adapt_loss {}, test_loss {}'.format(epoch, 0, test_loss.item()))
                 self.plot(outputs, os.path.join(output_sub_dir, file_name))
             else:
                 # # # adaptation 
@@ -522,28 +539,28 @@ class Regression():
                 optimizer.step()
 
                 # # # test   
-                outputs, test_loss_avg = self.test()
+                outputs, test_loss = self.test()
 
                 # # # record the losses for the later plotting
                 adapt_losses.append(adapt_loss.item())
-                test_losses.append(test_loss_avg)
+                test_losses.append(test_loss.item())
 
                 # # # # print log and plot
-                logging.info('epoch {}, adapt_loss {}, test_loss {}'.format(epoch, adapt_loss.item(), test_loss_avg))
+                logging.info('epoch {}, adapt_loss {}, test_loss {}'.format(epoch, adapt_loss.item(), test_loss.item()))
                 self.plot(outputs, os.path.join(output_sub_dir, file_name))
 
                 if adapt_loss.item() < min_val_loss:
                     min_val_loss = adapt_loss.item()
-                    converge_step_left = self.ear_stop_num
+                    converge_step_left = self.ear_stop_num_test
                 else:
                     converge_step_left -= 1
                     logging.info('early stop countdown %d' % converge_step_left)
 
                 if converge_step_left == 0:
                     break
-                if abs(adapt_loss.item() - pre_adapt_loss) / adapt_loss.item() < 1e-3:
+                if abs(adapt_loss.item() - pre_adapt_loss) / adapt_loss.item() < 1e-4:
                     break
-                if abs(adapt_loss.item() - pre_adapt_loss) < 1e-3:
+                if abs(adapt_loss.item() - pre_adapt_loss) < 1e-4:
                     break
 
                 pre_adapt_loss = adapt_loss.item()
@@ -570,16 +587,23 @@ class Regression():
             optimizer = self.optimizer
             meta_optimizer = self.meta_optimizer
             sample_idx = np.random.choice(cfg.train_num, self.sample_num)
+            sample_idx_val = np.random.choice(cfg.train_num, self.sample_num_val)
+
             for batch_idx in range(math.ceil(self.sample_num / self.batch_size)):
                 inputs = numpy_to_var(batch_idx, self.batch_size, x = self.train_x[sample_idx], \
                                         last_batch = (batch_idx == int(self.sample_num / self.batch_size)))
+                inputs_val = numpy_to_var(batch_idx, self.batch_size, x = self.train_x[sample_idx_val], \
+                                        last_batch = (batch_idx == int(self.sample_num / self.batch_size)))
+
                 init_state = copy.deepcopy(self.model.state_dict())
                 domain_idx = random.choices(range(cfg.d_sour_num), k = self.domain_num)
-
                 loss_tasks = []
                 filter_grad = []
+
                 for dom in domain_idx:
                     labels = numpy_to_var(batch_idx, self.batch_size, domain=dom, y=self.train_y[:, sample_idx], \
+                                          last_batch=(batch_idx == int(self.sample_num / self.batch_size)))
+                    labels_val = numpy_to_var(batch_idx, self.batch_size, domain=dom, y=self.train_y[:, sample_idx_val], \
                                           last_batch=(batch_idx == int(self.sample_num / self.batch_size)))
 
                     self.model.load_state_dict(init_state)
@@ -595,9 +619,10 @@ class Regression():
                     optimizer.step()
 
                     optimizer.zero_grad()
-                    outputs = self.model(inputs)
-                    loss = self.creiterion(outputs, labels)
-                    loss_tasks.append(loss)
+                    outputs = self.model(inputs_val)
+                    loss = self.creiterion(outputs, labels_val)
+                    # # record with normalization
+                    loss_tasks.append(loss / self.d_sour_a[dom] ** 2)
                     loss.backward(retain_graph=True)
                     params_spe = [p.grad.data for p in self.model.parameters()]
 
@@ -625,7 +650,7 @@ class Regression():
             if epoch % self.val_period == 0:
                 val_init_state = copy.deepcopy(self.model.state_dict())
                 val_loss_tasks = []
-                for dom in range(cfg.d_sour_num):
+                for dom in domain_idx:
                     val_inputs, val_labels = numpy_to_var(0, self.batch_size, x=self.val_x, y=self.val_y, domain=dom)
 
                     # # tmp-updated model for each domain
@@ -643,7 +668,7 @@ class Regression():
                     val_loss = self.creiterion(val_outputs, val_labels)
 
                     # # record loss for diff domains
-                    val_loss_tasks.append(val_loss)
+                    val_loss_tasks.append(val_loss / self.d_sour_a[dom] ** 2)
 
                 val_losses = torch.stack(val_loss_tasks).sum(0) / cfg.d_sour_num
                 self.model.load_state_dict(val_init_state)
@@ -655,13 +680,14 @@ class Regression():
                 if val_losses.item() < min_val_loss:
                     torch.save(self.model.state_dict(), self.model_path)
                     torch.save(self.filter.state_dict(), self.filter_path)
+                    logging.info('mode saved')
                     min_val_loss = val_losses.item()
                     converge_step_left = self.ear_stop_num
                 else:
                     converge_step_left -= 1
                     logging.info('early stop countdown %d' % converge_step_left)
 
-                if converge_step_left == 0 or val_losses.item() < 1e-4:
+                if converge_step_left == 0 or val_losses.item() < 1e-5:
                     return
 
     def test_filter(self):
@@ -697,8 +723,8 @@ class Regression():
             file_name = 'adapt_step_' + str(epoch) + '.png'
             if epoch == 0:
                 # # # zero-shot
-                outputs, test_loss_avg = self.test()
-                logging.info('epoch {}, adapt_loss {}, test_loss {}'.format(epoch, 0, test_loss_avg))
+                outputs, test_loss = self.test()
+                logging.info('epoch {}, adapt_loss {}, test_loss {}'.format(epoch, 0, test_loss.item()))
                 self.plot(outputs, os.path.join(output_sub_dir, file_name))
             else:
                 # # # adaptation 
@@ -713,28 +739,28 @@ class Regression():
                 optimizer.step()
 
                 # # # test   
-                outputs, test_loss_avg = self.test()
+                outputs, test_loss = self.test()
 
                 # # # record the losses for the later plotting
                 adapt_losses.append(adapt_loss.item())
-                test_losses.append(test_loss_avg)
+                test_losses.append(test_loss.item())
 
                 # # # # print log and plot
-                logging.info('epoch {}, adapt_loss {}, test_loss {}'.format(epoch, adapt_loss.item(), test_loss_avg))
+                logging.info('epoch {}, adapt_loss {}, test_loss {}'.format(epoch, adapt_loss.item(), test_loss.item()))
                 self.plot(outputs, os.path.join(output_sub_dir, file_name))
 
                 if adapt_loss.item() < min_val_loss:
                     min_val_loss = adapt_loss.item()
-                    converge_step_left = self.ear_stop_num
+                    converge_step_left = self.ear_stop_num_test
                 else:
                     converge_step_left -= 1
                     logging.info('early stop countdown %d' % converge_step_left)
 
                 if converge_step_left == 0:
                     break
-                if abs(adapt_loss.item() - pre_adapt_loss) / adapt_loss.item() < 1e-3:
+                if abs(adapt_loss.item() - pre_adapt_loss) / adapt_loss.item() < 1e-4:
                     break
-                if abs(adapt_loss.item() - pre_adapt_loss) < 1e-3:
+                if abs(adapt_loss.item() - pre_adapt_loss) < 1e-4:
                     break
 
                 pre_adapt_loss = adapt_loss.item()
@@ -765,12 +791,10 @@ def parse_arg_cfg(args):
     return
 
 def main():
-
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode', default='train_filter')
     parser.add_argument('--cfg', nargs='*')
     args = parser.parse_args()
-
 
     if '_' in args.mode:
         cfg.mode = args.mode.split('_')[0]
@@ -784,8 +808,8 @@ def main():
         os.mkdir('./experiments')
 
     if cfg.model_dir == '':
-        cfg.model_dir = 'experiments/{}_sd{}_lr{}_mlr{}_flr{}_sa{}_dn{}_sd{}_es{}_est{}/'.format(cfg.alg,
-                         cfg.seed, cfg.lr, cfg.meta_lr, cfg.filter_lr, cfg.sample_num,
+        cfg.model_dir = 'experiments/{}_sd{}_lr{}_mlr{}_flr{}_sa{}_sav{}_dn{}_sd{}_es{}_est{}/'.format(cfg.alg,
+                         cfg.seed, cfg.lr, cfg.meta_lr, cfg.filter_lr, cfg.sample_num, cfg.sample_num_val,
                          cfg.domain_num, cfg.d_sour_num, cfg.ear_stop_num, cfg.ear_stop_num_test)
 
     if cfg.mode == 'train':
@@ -810,6 +834,7 @@ def main():
     random.seed(cfg.seed)
     np.random.seed(cfg.seed)
     torch.manual_seed(cfg.seed)
+    torch.cuda.manual_seed(cfg.seed)
 
     reg = Regression()
 
@@ -825,7 +850,7 @@ def main():
 
     if args.mode == 'test_maml':
         reg.test_maml()
-        
+
     if args.mode == 'train_filter':
         if cfg.save_log:
             with open(os.path.join(cfg.model_dir, 'config.json'), 'w') as f:
@@ -835,27 +860,6 @@ def main():
 
     if args.mode == 'test_filter':
         reg.test_filter()
-
-    # # reg.train()
-    # # reg.test(self.test_x_old, self.test_y_old)
-    # # reg.train_transfer()
-    # # reg.test_adapt(model_path = './model/transfer.pkl')
-    # # reg.test(model_path = './model/transfer.pkl')
-
-    # # reg.model_dir = './model/maml/N' + str(cfg.support_num) + '_detail'
-    # # # reg.model_dir = './model/maml/N3_detail'
-    # # # # reg.train_maml()
-    # # # for model_name in [f for f in os.listdir(reg.model_dir) if os.path.isfile(os.path.join(reg.model_dir, f))]:
-    # # #     reg.test_adapt(model_path = os.path.join(reg.model_dir, model_name), output_dir = './result_pic/maml/')
-    # # reg.test_adapt(model_path = os.path.join(reg.model_dir, 'epoch_42500.pkl'), output_dir = './result_pic/maml/')
-
-    # # reg.model_dir = './model/filter/N3_detail'
-    # reg.model_dir = './model/filter/N' + str(cfg.support_num) + '_detail'
-    # # reg.train_filter()
-    # # for model_name in [f for f in os.listdir(reg.model_dir) if os.path.isfile(os.path.join(reg.model_dir, f)) and not f.endswith('filter.pkl')]:
-    # #     reg.test_filter(model_path = os.path.join(reg.model_dir, model_name), output_dir = './result_pic/filter/')
-    # reg.test_filter(model_path = os.path.join(reg.model_dir, 'epoch_12500.pkl'), output_dir = './result_pic/filter/')
-
 
 if __name__ == "__main__":
     main()
