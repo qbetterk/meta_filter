@@ -25,7 +25,7 @@ class _Config():
         self.min_val_loss = 1 << 30
         self.ear_stop_num = 10
         self.ear_stop_num_test = 30
-        self.max_adapt_num = 5000
+        self.max_adapt_num = 500
 
         self.mode = 'train'
         self.model_dir = ''

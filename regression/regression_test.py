@@ -379,7 +379,7 @@ class Regression():
                     loss = self.creiterion(outputs, labels_val)
 
                     # # record loss for diff domains with normalization
-                    loss_tasks.append(loss / self.d_sour_a[dom] ** 2)
+                    loss_tasks.append(loss)
 
                 self.model.load_state_dict(init_state)
                 self.meta_optimizer.zero_grad()
@@ -410,7 +410,7 @@ class Regression():
                     val_loss = self.creiterion(val_outputs, val_labels)
 
                     # # record loss for diff domains
-                    val_loss_tasks.append(val_loss / self.d_sour_a[dom] ** 2)
+                    val_loss_tasks.append(val_loss)
 
                 val_losses = torch.stack(val_loss_tasks).sum(0) / cfg.d_sour_num
                 self.model.load_state_dict(val_init_state)
@@ -427,6 +427,7 @@ class Regression():
                 else:
                     converge_step_left -= 1
                     logging.info('early stop countdown %d' % converge_step_left)
+
 
                 if converge_step_left == 0 or val_losses.item() < 1e-5:
                     return
@@ -556,12 +557,12 @@ class Regression():
                     converge_step_left -= 1
                     logging.info('early stop countdown %d' % converge_step_left)
 
-                if converge_step_left == 0:
-                    break
-                if abs(adapt_loss.item() - pre_adapt_loss) / adapt_loss.item() < 1e-4:
-                    break
-                if abs(adapt_loss.item() - pre_adapt_loss) < 1e-4:
-                    break
+                # if converge_step_left == 0:
+                #     break
+                # if abs(adapt_loss.item() - pre_adapt_loss) / adapt_loss.item() < 1e-4:
+                #     break
+                # if abs(adapt_loss.item() - pre_adapt_loss) < 1e-4:
+                #     break
 
                 pre_adapt_loss = adapt_loss.item()
 
@@ -622,7 +623,7 @@ class Regression():
                     outputs = self.model(inputs_val)
                     loss = self.creiterion(outputs, labels_val)
                     # # record with normalization
-                    loss_tasks.append(loss / self.d_sour_a[dom] ** 2)
+                    loss_tasks.append(loss)
                     loss.backward(retain_graph=True)
                     params_spe = [p.grad.data for p in self.model.parameters()]
 
@@ -668,7 +669,7 @@ class Regression():
                     val_loss = self.creiterion(val_outputs, val_labels)
 
                     # # record loss for diff domains
-                    val_loss_tasks.append(val_loss / self.d_sour_a[dom] ** 2)
+                    val_loss_tasks.append(val_loss)
 
                 val_losses = torch.stack(val_loss_tasks).sum(0) / cfg.d_sour_num
                 self.model.load_state_dict(val_init_state)
@@ -756,12 +757,16 @@ class Regression():
                     converge_step_left -= 1
                     logging.info('early stop countdown %d' % converge_step_left)
 
-                if converge_step_left == 0:
-                    break
                 if abs(adapt_loss.item() - pre_adapt_loss) / adapt_loss.item() < 1e-4:
-                    break
+                    converge_step_left -= 1
+                    logging.info('early stop countdown %d' % converge_step_left)
+
                 if abs(adapt_loss.item() - pre_adapt_loss) < 1e-4:
-                    break
+                    converge_step_left -= 1
+                    logging.info('early stop countdown %d' % converge_step_left)
+
+                # if converge_step_left <= 0:
+                #     return
 
                 pre_adapt_loss = adapt_loss.item()
 
