@@ -115,11 +115,17 @@ class reg_net(nn.Module):
         self.linear2  = nn.Linear(self.hid_size[0], self.hid_size[1])
         self.linear3  = nn.Linear(self.hid_size[1], self.output_size)
 
-    def forward(self, inputs):
+    def forward(self, inputs, var=None):
         self.input = inputs
-        self.hid_layer1 = F.relu(self.linear1(self.input))
-        self.hid_layer2 = F.relu(self.linear2(self.hid_layer1))
-        self.output = self.linear3(self.hid_layer2)
+        if var == None:
+            self.hid_layer1 = F.relu(self.linear1(self.input))
+            self.hid_layer2 = F.relu(self.linear2(self.hid_layer1))
+            self.output = self.linear3(self.hid_layer2)
+        else:
+            self.hid_layer1 = F.relu(F.linear(self.input, var[0], var[1]))
+            self.hid_layer2 = F.relu(F.linear(self.hid_layer1, var[2], var[3]))
+            self.output = F.linear(self.hid_layer2, var[4], var[5])
+
         return self.output
 
 def numpy_to_var(batch_idx, batch_size, last_batch=True, domain=0, **kwargs):
@@ -170,7 +176,10 @@ class Regression():
         self.batch_size = cfg.batch_size
         self.sample_num = cfg.sample_num
         self.sample_num_val = cfg.sample_num_val
+        self.sample_num_maml = cfg.sample_num_maml
         self.domain_num = cfg.domain_num
+
+        self.sw = time.time()
 
         self.model = reg_net()
         if torch.cuda.is_available():
@@ -193,6 +202,7 @@ class Regression():
         self.max_adapt_num = cfg.max_adapt_num
 
         self.generate_data()
+
 
     def generate_data(self):
 
@@ -344,17 +354,16 @@ class Regression():
     def train_maml(self):
         converge_step_left = self.ear_stop_num
         min_val_loss = self.min_val_loss
-        sw = time.time()
 
         ################## train #####################
         for epoch in range(self.epoch_num):
-            sample_idx = np.random.choice(cfg.train_num, self.sample_num)
+            sample_idx = np.random.choice(cfg.train_num, self.sample_num_maml)
             sample_idx_val = np.random.choice(cfg.train_num, self.sample_num_val)
-            for batch_idx in range(math.ceil(self.sample_num / self.batch_size)):
+            for batch_idx in range(math.ceil(self.sample_num_maml / self.batch_size)):
                 inputs = numpy_to_var(batch_idx, self.batch_size, x=self.train_x[sample_idx], \
-                                      last_batch=(batch_idx == int(self.sample_num / self.batch_size)))
-                labels_val = numpy_to_var(batch_idx, self.batch_size, x=self.train_x[sample_idx_val], \
-                                      last_batch=(batch_idx == int(self.sample_num / self.batch_size)))
+                                      last_batch=(batch_idx == int(self.sample_num_maml / self.batch_size)))
+                inputs_val = numpy_to_var(0, self.batch_size, x=self.train_x[sample_idx_val], \
+                                      last_batch=True)
 
                 init_state = copy.deepcopy(self.model.state_dict())
                 loss_tasks = []
@@ -362,24 +371,41 @@ class Regression():
                 domain_idx = random.choices(range(cfg.d_sour_num), k = self.domain_num)
                 for dom in domain_idx:
                     labels = numpy_to_var(batch_idx, self.batch_size, domain=dom, y=self.train_y[:, sample_idx], \
-                                          last_batch=(batch_idx == int(self.sample_num / self.batch_size)))
-                    labels_val = numpy_to_var(batch_idx, self.batch_size, domain=dom, y=self.train_y[:, sample_idx_val], \
-                                          last_batch=(batch_idx == int(self.sample_num / self.batch_size)))
+                                          last_batch=(batch_idx == int(self.sample_num_maml / self.batch_size)))
+                    labels_val = numpy_to_var(0, self.batch_size, domain=dom, y=self.train_y[:, sample_idx_val], \
+                                          last_batch=True)
+                    if cfg.alg == 'maml':
+                        # # tmp-updated model for each domain
+                        self.model.load_state_dict(init_state)
+                        self.optimizer.zero_grad()
+                        outputs = self.model(inputs)
+                        loss = self.creiterion(outputs, labels)
+                        loss.backward()
+                        self.optimizer.step()
 
-                    # # tmp-updated model for each domain
-                    self.model.load_state_dict(init_state)
-                    self.optimizer.zero_grad()
-                    outputs = self.model(inputs)
-                    loss = self.creiterion(outputs, labels)
-                    loss.backward()
-                    self.optimizer.step()
+                        # # compute the loss of tmp-updated model
+                        outputs = self.model(inputs_val)
+                        loss = self.creiterion(outputs, labels_val)
 
-                    # # compute the loss of tmp-updated model
-                    outputs = self.model(labels_val)
-                    loss = self.creiterion(outputs, labels_val)
+                        # # record loss for diff domains with normalization
+                        loss_tasks.append(loss)
 
-                    # # record loss for diff domains with normalization
-                    loss_tasks.append(loss)
+                    elif cfg.alg == 'maml2' :
+                        self.optimizer.zero_grad()
+                        outputs = self.model(inputs)
+                        loss = self.creiterion(outputs, labels)
+                        grad = torch.autograd.grad(loss, self.model.parameters())
+                        fast_weights = list(map(lambda p: p[1] - self.lr * p[0], zip(grad, self.model.parameters())))
+
+                        # pdb.set_trace()
+                        # # compute the loss of tmp-updated model
+                        outputs = self.model(inputs_val, fast_weights)
+                        loss = self.creiterion(outputs, labels_val)
+
+                        # # record loss for diff domains with normalization
+                        loss_tasks.append(loss)
+
+                        del grad, fast_weights
 
                 self.model.load_state_dict(init_state)
                 self.meta_optimizer.zero_grad()
@@ -402,11 +428,19 @@ class Regression():
                     self.optimizer.zero_grad()
                     val_outputs = self.model(val_inputs)
                     val_loss = self.creiterion(val_outputs, val_labels)
-                    val_loss.backward()
-                    self.optimizer.step()
 
-                    # # compute the loss of tmp-updated model
-                    val_outputs = self.model(val_inputs)
+                    if cfg.alg == 'maml':
+                        val_loss.backward()
+                        self.optimizer.step()
+                        # # compute the loss of tmp-updated model
+                        val_outputs = self.model(val_inputs)
+
+                    elif cfg.alg == 'maml2':
+                        grad = torch.autograd.grad(val_loss, self.model.parameters())
+                        fast_weights = list(map(lambda p: p[1] - self.lr * p[0], zip(grad, self.model.parameters())))
+                        # # compute the loss of tmp-updated model
+                        val_outputs = self.model(val_inputs, fast_weights)
+
                     val_loss = self.creiterion(val_outputs, val_labels)
 
                     # # record loss for diff domains
@@ -416,7 +450,7 @@ class Regression():
                 self.model.load_state_dict(val_init_state)
 
                 logging.info('epoch {}, meta loss {:f}, validation loss {:f}, total time: {:.1f}min'.format(epoch, 
-                                                            meta_loss.item(), val_losses.item(), (time.time()-sw)/60))
+                                                            meta_loss.item(), val_losses.item(), (time.time()-self.sw)/60))
 
                 # # save the model with the lowest validation loss
                 if val_losses.item() < min_val_loss:
@@ -432,72 +466,104 @@ class Regression():
                 if converge_step_left == 0 or val_losses.item() < 1e-5:
                     return
 
-    def test(self):
-        '''
-        return outputs
-               test_loss_avg
-        '''
-        # outputs = []
-        # test_losses = []
-        # with torch.no_grad(): 
-        # # we don't need gradients in the testing phase
-        #     for i in range(cfg.d_targ_num):
-        #         if torch.cuda.is_available():
-        #             output = self.model(Variable(torch.from_numpy(self.test_x).cuda()))
-        #             labels = Variable(torch.from_numpy(self.test_y[i]).cuda())
-        #         else:
-        #             output = self.model(Variable(torch.from_numpy(self.test_x)))
-        #             labels = Variable(torch.from_numpy(self.test_y[i]))
-        #         test_loss = self.creiterion(output, labels)
-        #         outputs.append(output)
-        #         test_losses.append(float(test_loss))
-        #     # # average with normalization
-        #     test_loss_avg = sum([test_losses[i] / self.d_targ_a[i] ** 2 for i in range(len(test_losses))]) / len(test_losses)
-        # return outputs, test_loss_avg
+    def train_maml2(self):
+        converge_step_left = self.ear_stop_num
+        min_val_loss = self.min_val_loss
+        # self.model = reg_net2()
+        # if torch.cuda.is_available():
+        #     self.model.cuda()
 
-        with torch.no_grad(): 
-            if torch.cuda.is_available():
-                output = self.model(Variable(torch.from_numpy(self.test_x).cuda()))
-                labels = Variable(torch.from_numpy(self.test_y[0]).cuda())
-            else:
-                output = self.model(Variable(torch.from_numpy(self.test_x)))
-                labels = Variable(torch.from_numpy(self.test_y[0]))
-            test_loss = self.creiterion(output, labels)
-        return output, test_loss
+        ################## train #####################
+        for epoch in range(self.epoch_num):
+            sample_idx = np.random.choice(cfg.train_num, self.sample_num)
+            sample_idx_val = np.random.choice(cfg.train_num, self.sample_num_val)
+            for batch_idx in range(math.ceil(self.sample_num / self.batch_size)):
+                inputs = numpy_to_var(batch_idx, self.batch_size, x=self.train_x[sample_idx], \
+                                      last_batch=(batch_idx == int(self.sample_num / self.batch_size)))
+                inputs_val = numpy_to_var(batch_idx, self.batch_size, x=self.train_x[sample_idx_val], \
+                                      last_batch=(batch_idx == int(self.sample_num / self.batch_size)))
 
-    def plot(self, outputs, file_path, mode = 'sin'):
-        plt.figure()
-        model = ''
-        if 'maml' in file_path:
-            model = 'maml'
-        elif 'filter' in file_path:
-            model = 'filter'
+                # init_state = copy.deepcopy(self.model.state_dict())
+                loss_tasks = []
 
-        title = mode + '_' + model +             \
-                  '_sup'+ str(cfg.support_num) + \
-                  '_sa' + str(self.sample_num) + \
-                  '_bz' + str(self.batch_size) + \
-                  '_do' + str(self.domain_num) + \
-                  '_ep' + str(self.epoch_num)  + \
-                  '_vp' + str(self.val_period)
+                domain_idx = random.choices(range(cfg.d_sour_num), k = self.domain_num)
+                for dom in domain_idx:
+                    labels = numpy_to_var(batch_idx, self.batch_size, domain=dom, y=self.train_y[:, sample_idx], \
+                                          last_batch=(batch_idx == int(self.sample_num / self.batch_size)))
+                    labels_val = numpy_to_var(batch_idx, self.batch_size, domain=dom, y=self.train_y[:, sample_idx_val], \
+                                          last_batch=(batch_idx == int(self.sample_num / self.batch_size)))
 
-        if mode == 'sin':
-            plt.plot(self.test_x, self.test_y[0], 'bo', label = 'oracle')
-            plt.plot(self.test_x, outputs.data.cpu().numpy(), 'ro', label = 'predicted')
-            plt.plot(self.support_x, self.support_y[0], 'go', label = 'support point')
+                    # # tmp-updated model for each domain
+                    # self.model.load_state_dict(init_state)
+                    self.optimizer.zero_grad()
+                    outputs = self.model(inputs)
+                    loss = self.creiterion(outputs, labels)
+                    grad = torch.autograd.grad(loss, self.model.parameters())
+                    fast_weights = list(map(lambda p: p[1] - self.lr * p[0], zip(grad, self.model.parameters())))
 
-            title = file_path.split('.png')[0].split('_')[-1] + '_' + title
-            plt.title(title)
-        elif mode == 'loss':
-            for losses in outputs:
-                plt.plot(outputs[losses], label = losses)
-            plt.xlabel('Adaptation Step Number')
-            plt.ylabel('MSE')
-            # plt.ylim(0, 0.5)
-            plt.title(title)
-        plt.legend()
-        plt.savefig(file_path)
-        plt.close()
+                    # pdb.set_trace()
+                    # # compute the loss of tmp-updated model
+                    outputs = self.model(inputs_val, fast_weights)
+                    loss = self.creiterion(outputs, labels_val)
+
+                    # # record loss for diff domains with normalization
+                    loss_tasks.append(loss)
+
+                    del grad, fast_weights
+
+                # self.model.load_state_dict(init_state)
+                self.meta_optimizer.zero_grad()
+                meta_loss = torch.stack(loss_tasks).sum(0) / self.domain_num
+                meta_loss.backward()
+                self.meta_optimizer.step()
+
+                if math.isnan(meta_loss.item()):
+                    pdb.set_trace()
+
+            ######################### validation ############################
+            if epoch % self.val_period == 0:
+                val_init_state = copy.deepcopy(self.model.state_dict())
+                val_loss_tasks = []
+                for dom in domain_idx:
+                    val_inputs, val_labels = numpy_to_var(0, self.batch_size, x=self.val_x, y=self.val_y, domain=dom)
+
+                    # # tmp-updated model for each domain
+                    self.model.load_state_dict(val_init_state)
+                    self.optimizer.zero_grad()
+                    val_outputs = self.model(val_inputs)
+                    val_loss = self.creiterion(val_outputs, val_labels)
+                    grad = torch.autograd.grad(val_loss, self.model.parameters())
+                    fast_weights = list(map(lambda p: p[1] - self.lr * p[0], zip(grad, self.model.parameters())))
+
+                    # val_loss.backward()
+                    # self.optimizer.step()
+
+                    # # compute the loss of tmp-updated model
+                    val_outputs = self.model(val_inputs, fast_weights)
+                    val_loss = self.creiterion(val_outputs, val_labels)
+
+                    # # record loss for diff domains
+                    val_loss_tasks.append(val_loss)
+
+                val_losses = torch.stack(val_loss_tasks).sum(0) / cfg.d_sour_num
+                self.model.load_state_dict(val_init_state)
+
+                logging.info('epoch {}, meta loss {:f}, validation loss {:f}, total time: {:.1f}min'.format(epoch, 
+                                                            meta_loss.item(), val_losses.item(), (time.time()-self.sw)/60))
+
+                # # save the model with the lowest validation loss
+                if val_losses.item() < min_val_loss:
+                    torch.save(self.model.state_dict(), self.model_path)
+                    logging.info('mode saved')
+                    min_val_loss = val_losses.item()
+                    converge_step_left = self.ear_stop_num
+                else:
+                    converge_step_left -= 1
+                    logging.info('early stop countdown %d' % converge_step_left)
+
+
+                if converge_step_left == 0 or val_losses.item() < 1e-5:
+                    return
 
     def test_maml(self):
         # # # check paths
@@ -521,6 +587,7 @@ class Regression():
         adapt_losses = []
         test_losses = []
         optimizer = self.optimizer
+        fast_weights = None
 
         for epoch in range(self.max_adapt_num + 1):
             file_name = 'adapt_step_' + str(epoch) + '.png'
@@ -572,10 +639,76 @@ class Regression():
         pkl.dump({'adapt': adapt_losses, 'test': test_losses}, 
                  open(os.path.join(output_sub_dir, 'test_error.pkl'), 'wb'))
 
+    def test(self, fast_weights=None):
+        '''
+        return outputs
+               test_loss_avg
+        '''
+        # outputs = []
+        # test_losses = []
+        # with torch.no_grad(): 
+        # # we don't need gradients in the testing phase
+        #     for i in range(cfg.d_targ_num):
+        #         if torch.cuda.is_available():
+        #             output = self.model(Variable(torch.from_numpy(self.test_x).cuda()))
+        #             labels = Variable(torch.from_numpy(self.test_y[i]).cuda())
+        #         else:
+        #             output = self.model(Variable(torch.from_numpy(self.test_x)))
+        #             labels = Variable(torch.from_numpy(self.test_y[i]))
+        #         test_loss = self.creiterion(output, labels)
+        #         outputs.append(output)
+        #         test_losses.append(float(test_loss))
+        #     # # average with normalization
+        #     test_loss_avg = sum([test_losses[i] / self.d_targ_a[i] ** 2 for i in range(len(test_losses))]) / len(test_losses)
+        # return outputs, test_loss_avg
+
+        with torch.no_grad(): 
+            if torch.cuda.is_available():
+                output = self.model(Variable(torch.from_numpy(self.test_x).cuda()), fast_weights)
+                labels = Variable(torch.from_numpy(self.test_y[0]).cuda())
+            else:
+                output = self.model(Variable(torch.from_numpy(self.test_x)), fast_weights)
+                labels = Variable(torch.from_numpy(self.test_y[0]))
+            test_loss = self.creiterion(output, labels)
+        return output, test_loss
+
+    def plot(self, outputs, file_path, mode = 'sin'):
+        plt.figure()
+        model = ''
+        if 'maml' in file_path:
+            model = 'maml'
+        elif 'filter' in file_path:
+            model = 'filter'
+
+        title = mode + '_' + model +             \
+                  '_sup'+ str(cfg.support_num) + \
+                  '_sa' + str(self.sample_num) + \
+                  '_bz' + str(self.batch_size) + \
+                  '_do' + str(self.domain_num) + \
+                  '_ep' + str(self.epoch_num)  + \
+                  '_vp' + str(self.val_period)
+
+        if mode == 'sin':
+            plt.plot(self.test_x, self.test_y[0], 'bo', label = 'oracle')
+            plt.plot(self.test_x, outputs.data.cpu().numpy(), 'ro', label = 'predicted')
+            plt.plot(self.support_x, self.support_y[0], 'go', label = 'support point')
+
+            title = file_path.split('.png')[0].split('_')[-1] + '_' + title
+            plt.title(title)
+        elif mode == 'loss':
+            for losses in outputs:
+                plt.plot(outputs[losses], label = losses)
+            plt.xlabel('Adaptation Step Number')
+            plt.ylabel('MSE')
+            # plt.ylim(0, 0.5)
+            plt.title(title)
+        plt.legend()
+        plt.savefig(file_path)
+        plt.close()
+
     def train_filter(self):
         converge_step_left = self.ear_stop_num
         min_val_loss = self.min_val_loss
-        sw = time.time()
 
         #################### initialize the filter ###########################
         self.filter = reg_net()
@@ -593,8 +726,8 @@ class Regression():
             for batch_idx in range(math.ceil(self.sample_num / self.batch_size)):
                 inputs = numpy_to_var(batch_idx, self.batch_size, x = self.train_x[sample_idx], \
                                         last_batch = (batch_idx == int(self.sample_num / self.batch_size)))
-                inputs_val = numpy_to_var(batch_idx, self.batch_size, x = self.train_x[sample_idx_val], \
-                                        last_batch = (batch_idx == int(self.sample_num / self.batch_size)))
+                inputs_val = numpy_to_var(0, self.batch_size, x = self.train_x[sample_idx_val], \
+                                        last_batch = True)
 
                 init_state = copy.deepcopy(self.model.state_dict())
                 domain_idx = random.choices(range(cfg.d_sour_num), k = self.domain_num)
@@ -604,28 +737,47 @@ class Regression():
                 for dom in domain_idx:
                     labels = numpy_to_var(batch_idx, self.batch_size, domain=dom, y=self.train_y[:, sample_idx], \
                                           last_batch=(batch_idx == int(self.sample_num / self.batch_size)))
-                    labels_val = numpy_to_var(batch_idx, self.batch_size, domain=dom, y=self.train_y[:, sample_idx_val], \
-                                          last_batch=(batch_idx == int(self.sample_num / self.batch_size)))
+                    labels_val = numpy_to_var(0, self.batch_size, domain=dom, y=self.train_y[:, sample_idx_val], \
+                                          last_batch=True)
 
-                    self.model.load_state_dict(init_state)
-                    optimizer.zero_grad()
-                    outputs = self.model(inputs)
-                    loss = self.creiterion(outputs, labels)
-                    loss.backward(retain_graph=True)
+                    if cfg.alg == 'filter':
+                        self.model.load_state_dict(init_state)
+                        optimizer.zero_grad()
+                        outputs = self.model(inputs)
+                        loss = self.creiterion(outputs, labels)
+                        loss.backward(retain_graph=True)
 
-                    params_gen = [p.grad.data for p in self.model.parameters()]
-                    # # apply filter to gradient
-                    for p, q in zip(self.model.parameters(), self.filter.parameters()):
-                        p.grad.data = p.grad.data * q.data
-                    optimizer.step()
+                        params_gen = [p.grad.data for p in self.model.parameters()]
+                        # # apply filter to gradient
+                        for p, q in zip(self.model.parameters(), self.filter.parameters()):
+                            p.grad.data = p.grad.data * q.data
+                        optimizer.step()
 
-                    optimizer.zero_grad()
-                    outputs = self.model(inputs_val)
-                    loss = self.creiterion(outputs, labels_val)
-                    # # record with normalization
-                    loss_tasks.append(loss)
-                    loss.backward(retain_graph=True)
-                    params_spe = [p.grad.data for p in self.model.parameters()]
+                        optimizer.zero_grad()
+                        outputs = self.model(inputs_val)
+                        loss = self.creiterion(outputs, labels_val)
+                        # # record with normalization
+                        loss_tasks.append(loss)
+                        loss.backward(retain_graph=True)
+                        params_spe = [p.grad.data for p in self.model.parameters()]
+
+
+                    elif cfg.alg == 'filter2':
+                        outputs = self.model(inputs)
+                        loss = self.creiterion(outputs, labels)
+                        grad = torch.autograd.grad(loss, self.model.parameters())
+                        fast_weights = list(map(lambda p: p[1] - self.lr * p[0] * p[2], 
+                                                zip(grad, self.model.parameters(), self.filter.parameters())))
+
+                        params_gen = [p.data for p in grad]
+                        # # # apply filter to gradient
+                        outputs = self.model(inputs_val, fast_weights)
+                        loss = self.creiterion(outputs, labels_val)
+                        # # record with normalization
+                        loss_tasks.append(loss)
+                        grad = torch.autograd.grad(loss, fast_weights, retain_graph=True)
+                        params_spe = [p.data for p in grad]
+
 
                     # # update filter
                     if len(filter_grad) == 0:
@@ -654,19 +806,31 @@ class Regression():
                 for dom in domain_idx:
                     val_inputs, val_labels = numpy_to_var(0, self.batch_size, x=self.val_x, y=self.val_y, domain=dom)
 
-                    # # tmp-updated model for each domain
-                    self.model.load_state_dict(val_init_state)
-                    optimizer.zero_grad()
-                    val_outputs = self.model(val_inputs)
-                    val_loss = self.creiterion(val_outputs, val_labels)
-                    val_loss.backward()
-                    for p, q in zip(self.model.parameters(), self.filter.parameters()):
-                        p.grad.data = p.grad.data * q.data
-                    optimizer.step()
+                    if cfg.alg == 'filter':
+                        # # tmp-updated model for each domain
+                        self.model.load_state_dict(val_init_state)
+                        optimizer.zero_grad()
+                        val_outputs = self.model(val_inputs)
+                        val_loss = self.creiterion(val_outputs, val_labels)
+                        val_loss.backward()
+                        for p, q in zip(self.model.parameters(), self.filter.parameters()):
+                            p.grad.data = p.grad.data * q.data
+                        optimizer.step()
 
-                    # # compute the loss of tmp-updated model
-                    val_outputs = self.model(val_inputs)
-                    val_loss = self.creiterion(val_outputs, val_labels)
+                        # # compute the loss of tmp-updated model
+                        val_outputs = self.model(val_inputs)
+                        val_loss = self.creiterion(val_outputs, val_labels)
+
+                    elif cfg.alg == 'filter2':
+                        val_outputs = self.model(val_inputs)
+                        val_loss = self.creiterion(val_outputs, val_labels)
+                        grad = torch.autograd.grad(val_loss, self.model.parameters())
+                        fast_weights = list(map(lambda p: p[1] - self.lr * p[0] * p[2], 
+                                                zip(grad, self.model.parameters(), self.filter.parameters())))
+
+                        # # compute the loss of tmp-updated model
+                        val_outputs = self.model(val_inputs, fast_weights)
+                        val_loss = self.creiterion(val_outputs, val_labels)
 
                     # # record loss for diff domains
                     val_loss_tasks.append(val_loss)
@@ -675,7 +839,292 @@ class Regression():
                 self.model.load_state_dict(val_init_state)
 
                 logging.info('epoch {}, meta loss {:f}, validation loss {:f}, total time: {:.1f}min'.format(epoch, 
-                                                            meta_loss.item(), val_losses.item(), (time.time()-sw)/60))
+                                                            meta_loss.item(), val_losses.item(), (time.time()-self.sw)/60))
+
+                # # save the model with the lowest validation loss
+                if val_losses.item() < min_val_loss:
+                    torch.save(self.model.state_dict(), self.model_path)
+                    torch.save(self.filter.state_dict(), self.filter_path)
+                    logging.info('mode saved')
+                    min_val_loss = val_losses.item()
+                    converge_step_left = self.ear_stop_num
+                else:
+                    converge_step_left -= 1
+                    logging.info('early stop countdown %d' % converge_step_left)
+
+                if converge_step_left == 0 or val_losses.item() < 1e-5:
+                    return
+
+    def train_filter2(self):
+        converge_step_left = self.ear_stop_num
+        min_val_loss = self.min_val_loss
+
+        #################### initialize the filter ###########################
+        self.filter = reg_net()
+        if torch.cuda.is_available():
+            self.filter.cuda()
+        filter_optimizer = optim.Adam(self.filter.parameters(), lr=self.filter_lr)
+
+        ######################### train ###############################
+        for epoch in range(self.epoch_num):
+            optimizer = self.optimizer
+            meta_optimizer = self.meta_optimizer
+            sample_idx = np.random.choice(cfg.train_num, self.sample_num)
+            sample_idx_val = np.random.choice(cfg.train_num, self.sample_num_val)
+
+            for batch_idx in range(math.ceil(self.sample_num / self.batch_size)):
+                inputs = numpy_to_var(batch_idx, self.batch_size, x = self.train_x[sample_idx], \
+                                        last_batch = (batch_idx == int(self.sample_num / self.batch_size)))
+                inputs_val = numpy_to_var(batch_idx, self.batch_size, x = self.train_x[sample_idx_val], \
+                                        last_batch = (batch_idx == int(self.sample_num / self.batch_size)))
+
+                # init_state = copy.deepcopy(self.model.state_dict())
+                domain_idx = random.choices(range(cfg.d_sour_num), k = self.domain_num)
+                loss_tasks = []
+                filter_grad = []
+
+                for dom in domain_idx:
+                    labels = numpy_to_var(batch_idx, self.batch_size, domain=dom, y=self.train_y[:, sample_idx], \
+                                          last_batch=(batch_idx == int(self.sample_num / self.batch_size)))
+                    labels_val = numpy_to_var(batch_idx, self.batch_size, domain=dom, y=self.train_y[:, sample_idx_val], \
+                                          last_batch=(batch_idx == int(self.sample_num / self.batch_size)))
+
+                    # self.model.load_state_dict(init_state)
+                    # optimizer.zero_grad()
+                    outputs = self.model(inputs)
+                    loss = self.creiterion(outputs, labels)
+                    grad = torch.autograd.grad(loss, self.model.parameters())
+                    fast_weights = list(map(lambda p: p[1] - self.lr * p[0] * p[2], 
+                                            zip(grad, self.model.parameters(), self.filter.parameters())))
+
+
+                    params_gen = [p.data for p in grad]
+                    # # # apply filter to gradient
+
+                    # optimizer.zero_grad()
+                    outputs = self.model(inputs_val, fast_weights)
+                    loss = self.creiterion(outputs, labels_val)
+                    # # record with normalization
+                    loss_tasks.append(loss)
+                    # loss.backward(retain_graph=True)
+                    grad = torch.autograd.grad(loss, fast_weights, retain_graph=True)
+                    params_spe = [p.data for p in grad]
+
+                    # # update filter
+                    if len(filter_grad) == 0:
+                        filter_grad = [- j * k for j, k in zip(params_gen, params_spe)]
+                    elif len(filter_grad) == len(params_gen):
+                        filter_grad = [i - j * k for i, j, k in zip(filter_grad, params_gen, params_spe)]
+                    else:
+                        raise ValueError("Invalid filter gradient: dimension mismatch")
+
+                    del params_gen, params_spe, grad, fast_weights
+
+                filter_optimizer.zero_grad()
+                for i, j in zip(self.filter.parameters(), filter_grad):
+                    i.grad = copy.deepcopy(j)
+                filter_optimizer.step()
+
+                # # update meta 
+                # self.model.load_state_dict(init_state)
+                meta_optimizer.zero_grad()
+                meta_loss = torch.stack(loss_tasks).sum(0) / self.domain_num
+                meta_loss.backward()
+                meta_optimizer.step()
+
+            ######################### validation ############################
+            if epoch % self.val_period == 0:
+                # val_init_state = copy.deepcopy(self.model.state_dict())
+                val_loss_tasks = []
+                for dom in domain_idx:
+                    val_inputs, val_labels = numpy_to_var(0, self.batch_size, x=self.val_x, y=self.val_y, domain=dom)
+
+                    # # tmp-updated model for each domain
+                    # self.model.load_state_dict(val_init_state)
+                    optimizer.zero_grad()
+                    val_outputs = self.model(val_inputs)
+                    val_loss = self.creiterion(val_outputs, val_labels)
+                    grad = torch.autograd.grad(val_loss, self.model.parameters())
+                    fast_weights = list(map(lambda p: p[1] - self.lr * p[0] * p[2], 
+                                            zip(grad, self.model.parameters(), self.filter.parameters())))
+
+
+                    # # val_loss.backward()
+                    # for p, q in zip(self.model.parameters(), self.filter.parameters()):
+                    #     p.grad.data = p.grad.data * q.data
+                    # optimizer.step()
+
+                    # # compute the loss of tmp-updated model
+                    val_outputs = self.model(val_inputs, fast_weights)
+                    val_loss = self.creiterion(val_outputs, val_labels)
+
+                    # # record loss for diff domains
+                    val_loss_tasks.append(val_loss)
+
+                val_losses = torch.stack(val_loss_tasks).sum(0) / cfg.d_sour_num
+                # self.model.load_state_dict(val_init_state)
+
+                logging.info('epoch {}, meta loss {:f}, validation loss {:f}, total time: {:.1f}min'.format(epoch, 
+                                                            meta_loss.item(), val_losses.item(), (time.time()-self.sw)/60))
+
+                # # save the model with the lowest validation loss
+                if val_losses.item() < min_val_loss:
+                    torch.save(self.model.state_dict(), self.model_path)
+                    torch.save(self.filter.state_dict(), self.filter_path)
+                    logging.info('mode saved')
+                    min_val_loss = val_losses.item()
+                    converge_step_left = self.ear_stop_num
+                else:
+                    converge_step_left -= 1
+                    logging.info('early stop countdown %d' % converge_step_left)
+
+                if converge_step_left == 0 or val_losses.item() < 1e-5:
+                    return
+
+    def train_filter3(self):
+
+        cfg.alg = 'maml'
+        cfg.sample_num_maml = 100
+        logging.info('start training initialization with maml ...')
+        logging.info('alg: {}, sample_num_maml: {}'.format(cfg.alg, cfg.sample_num_maml))
+        self.train_maml()
+        os.rename(self.model_path, self.model_path.split('.pkl')[0] + '_maml.pkl')
+
+
+        cfg.alg = 'filter'
+        converge_step_left = self.ear_stop_num
+        min_val_loss = self.min_val_loss
+
+        #################### initialize the filter ###########################
+        self.filter = reg_net()
+        if torch.cuda.is_available():
+            self.filter.cuda()
+        filter_optimizer = optim.Adam(self.filter.parameters(), lr=self.filter_lr)
+
+        ######################### train ###############################
+        for epoch in range(self.epoch_num):
+            optimizer = self.optimizer
+            meta_optimizer = self.meta_optimizer
+            sample_idx = np.random.choice(cfg.train_num, self.sample_num)
+            sample_idx_val = np.random.choice(cfg.train_num, self.sample_num_val)
+
+            for batch_idx in range(math.ceil(self.sample_num / self.batch_size)):
+                inputs = numpy_to_var(batch_idx, self.batch_size, x = self.train_x[sample_idx], \
+                                        last_batch = (batch_idx == int(self.sample_num / self.batch_size)))
+                inputs_val = numpy_to_var(0, self.batch_size, x = self.train_x[sample_idx_val], \
+                                        last_batch = True)
+
+                init_state = copy.deepcopy(self.model.state_dict())
+                domain_idx = random.choices(range(cfg.d_sour_num), k = self.domain_num)
+                loss_tasks = []
+                filter_grad = []
+
+                for dom in domain_idx:
+                    labels = numpy_to_var(batch_idx, self.batch_size, domain=dom, y=self.train_y[:, sample_idx], \
+                                          last_batch=(batch_idx == int(self.sample_num / self.batch_size)))
+                    labels_val = numpy_to_var(0, self.batch_size, domain=dom, y=self.train_y[:, sample_idx_val], \
+                                          last_batch=True)
+
+                    if cfg.alg == 'filter':
+                        self.model.load_state_dict(init_state)
+                        optimizer.zero_grad()
+                        outputs = self.model(inputs)
+                        loss = self.creiterion(outputs, labels)
+                        loss.backward(retain_graph=True)
+
+                        params_gen = [p.grad.data for p in self.model.parameters()]
+                        # # apply filter to gradient
+                        for p, q in zip(self.model.parameters(), self.filter.parameters()):
+                            p.grad.data = p.grad.data * q.data
+                        optimizer.step()
+
+                        optimizer.zero_grad()
+                        outputs = self.model(inputs_val)
+                        loss = self.creiterion(outputs, labels_val)
+                        # # record with normalization
+                        loss_tasks.append(loss)
+                        loss.backward(retain_graph=True)
+                        params_spe = [p.grad.data for p in self.model.parameters()]
+
+
+                    elif cfg.alg == 'filter2':
+                        outputs = self.model(inputs)
+                        loss = self.creiterion(outputs, labels)
+                        grad = torch.autograd.grad(loss, self.model.parameters())
+                        fast_weights = list(map(lambda p: p[1] - self.lr * p[0] * p[2], 
+                                                zip(grad, self.model.parameters(), self.filter.parameters())))
+
+                        params_gen = [p.data for p in grad]
+                        # # # apply filter to gradient
+                        outputs = self.model(inputs_val, fast_weights)
+                        loss = self.creiterion(outputs, labels_val)
+                        # # record with normalization
+                        loss_tasks.append(loss)
+                        grad = torch.autograd.grad(loss, fast_weights, retain_graph=True)
+                        params_spe = [p.data for p in grad]
+
+
+                    # # update filter
+                    if len(filter_grad) == 0:
+                        filter_grad = [- j * k for j, k in zip(params_gen, params_spe)]
+                    elif len(filter_grad) == len(params_gen):
+                        filter_grad = [i - j * k for i, j, k in zip(filter_grad, params_gen, params_spe)]
+                    else:
+                        raise ValueError("Invalid filter gradient: dimension mismatch")
+
+                filter_optimizer.zero_grad()
+                for i, j in zip(self.filter.parameters(), filter_grad):
+                    i.grad = copy.deepcopy(j)
+                filter_optimizer.step()
+
+                # # update meta 
+                self.model.load_state_dict(init_state)
+                meta_optimizer.zero_grad()
+                meta_loss = torch.stack(loss_tasks).sum(0) / self.domain_num
+                meta_loss.backward()
+                meta_optimizer.step()
+
+            ######################### validation ############################
+            if epoch % self.val_period == 0:
+                val_init_state = copy.deepcopy(self.model.state_dict())
+                val_loss_tasks = []
+                for dom in domain_idx:
+                    val_inputs, val_labels = numpy_to_var(0, self.batch_size, x=self.val_x, y=self.val_y, domain=dom)
+
+                    if cfg.alg == 'filter':
+                        # # tmp-updated model for each domain
+                        self.model.load_state_dict(val_init_state)
+                        optimizer.zero_grad()
+                        val_outputs = self.model(val_inputs)
+                        val_loss = self.creiterion(val_outputs, val_labels)
+                        val_loss.backward()
+                        for p, q in zip(self.model.parameters(), self.filter.parameters()):
+                            p.grad.data = p.grad.data * q.data
+                        optimizer.step()
+
+                        # # compute the loss of tmp-updated model
+                        val_outputs = self.model(val_inputs)
+                        val_loss = self.creiterion(val_outputs, val_labels)
+
+                    elif cfg.alg == 'filter2':
+                        val_outputs = self.model(val_inputs)
+                        val_loss = self.creiterion(val_outputs, val_labels)
+                        grad = torch.autograd.grad(val_loss, self.model.parameters())
+                        fast_weights = list(map(lambda p: p[1] - self.lr * p[0] * p[2], 
+                                                zip(grad, self.model.parameters(), self.filter.parameters())))
+
+                        # # compute the loss of tmp-updated model
+                        val_outputs = self.model(val_inputs, fast_weights)
+                        val_loss = self.creiterion(val_outputs, val_labels)
+
+                    # # record loss for diff domains
+                    val_loss_tasks.append(val_loss)
+
+                val_losses = torch.stack(val_loss_tasks).sum(0) / cfg.d_sour_num
+                self.model.load_state_dict(val_init_state)
+
+                logging.info('epoch {}, meta loss {:f}, validation loss {:f}, total time: {:.1f}min'.format(epoch, 
+                                                            meta_loss.item(), val_losses.item(), (time.time()-self.sw)/60))
 
                 # # save the model with the lowest validation loss
                 if val_losses.item() < min_val_loss:
@@ -695,7 +1144,6 @@ class Regression():
         # # # check paths
         if not os.path.exists(self.model_path):
             print(self.model_path)
-            pdb.set_trace()
             raise ValueError("Model path: " + self.model_path + "does not exist")
         output_dir = os.path.join(self.model_dir, 'result_pic/')
         if not os.path.exists(output_dir):
@@ -719,6 +1167,7 @@ class Regression():
         adapt_losses = []
         test_losses = []
         optimizer = self.optimizer
+        fast_weights = None
 
         for epoch in range(self.max_adapt_num + 1):
             file_name = 'adapt_step_' + str(epoch) + '.png'
@@ -735,6 +1184,7 @@ class Regression():
                 outputs = self.model(inputs)
                 adapt_loss = self.creiterion(outputs, labels)
                 adapt_loss.backward()
+
                 for p, q in zip(self.model.parameters(), self.filter.parameters()):
                     p.grad.data = p.grad.data * q.data
                 optimizer.step()
@@ -757,22 +1207,21 @@ class Regression():
                     converge_step_left -= 1
                     logging.info('early stop countdown %d' % converge_step_left)
 
-                if abs(adapt_loss.item() - pre_adapt_loss) / adapt_loss.item() < 1e-4:
-                    converge_step_left -= 1
-                    logging.info('early stop countdown %d' % converge_step_left)
+                # if abs(adapt_loss.item() - pre_adapt_loss) / adapt_loss.item() < 1e-4:
+                #     converge_step_left -= 1
+                #     logging.info('early stop countdown %d' % converge_step_left)
 
-                if abs(adapt_loss.item() - pre_adapt_loss) < 1e-4:
-                    converge_step_left -= 1
-                    logging.info('early stop countdown %d' % converge_step_left)
+                # if abs(adapt_loss.item() - pre_adapt_loss) < 1e-4:
+                #     converge_step_left -= 1
+                #     logging.info('early stop countdown %d' % converge_step_left)
 
                 # if converge_step_left <= 0:
                 #     return
 
                 pre_adapt_loss = adapt_loss.item()
-
+    
         self.plot({'adapt': adapt_losses, 'test': test_losses}, 
-                   os.path.join(output_sub_dir, 'test_error.png'), 
-                   mode='loss')
+                   os.path.join(output_sub_dir, 'test_error.png'), mode='loss')
 
         pkl.dump({'adapt': adapt_losses, 'test': test_losses}, 
                  open(os.path.join(output_sub_dir, 'test_error.pkl'), 'wb'))
@@ -846,24 +1295,39 @@ def main():
     cfg.model_parameters = reg.count_params()
     logging.info(str(cfg))
 
-    if args.mode == 'train_maml':
+    if args.mode == 'train_maml' or args.mode == 'train_maml2':
         if cfg.save_log:
             with open(os.path.join(cfg.model_dir, 'config.json'), 'w') as f:
                 json.dump(cfg.__dict__, f, indent=2)
         reg.train_maml()
         reg.test_maml()
 
-    if args.mode == 'test_maml':
+    if args.mode == 'test_maml' or args.mode == 'test_maml2':
         reg.test_maml()
 
-    if args.mode == 'train_filter':
+    if args.mode == 'train_filter' or args.mode == 'train_filter2':
         if cfg.save_log:
             with open(os.path.join(cfg.model_dir, 'config.json'), 'w') as f:
                 json.dump(cfg.__dict__, f, indent=2)
         reg.train_filter()
         reg.test_filter()
 
-    if args.mode == 'test_filter':
+    if args.mode == 'test_filter' or args.mode == 'test_filter2':
+        reg.test_filter()
+
+
+    if args.mode == 'train_maml3':
+        if cfg.save_log:
+            with open(os.path.join(cfg.model_dir, 'config.json'), 'w') as f:
+                json.dump(cfg.__dict__, f, indent=2)
+        reg.train_maml()
+        reg.test_maml()
+
+    if args.mode == 'train_filter3':
+        if cfg.save_log:
+            with open(os.path.join(cfg.model_dir, 'config.json'), 'w') as f:
+                json.dump(cfg.__dict__, f, indent=2)
+        reg.train_filter3()
         reg.test_filter()
 
 if __name__ == "__main__":

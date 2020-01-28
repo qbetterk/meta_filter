@@ -9,17 +9,18 @@ class _Config():
     def reg_init(self):
 
         self.seed = 0
-        self.lr = 0.001
-        self.meta_lr = 0.001
-        self.filter_lr = 0.001
+        self.lr = 0.01
+        self.meta_lr = 0.01
+        self.filter_lr = 0.01
 
 
         self.epoch_num = 50001
         self.val_period = 500
         self.batch_size = 32
         self.sample_num = 3
+        self.sample_num_maml = 3
         self.sample_num_val = 100
-        self.domain_num = 15
+        self.domain_num = 30
 
         self.pre_val_loss = 0
         self.min_val_loss = 1 << 30
@@ -36,7 +37,7 @@ class _Config():
         self.cuda_device = 2
 
         # # # params to generate data points
-        self.d_sour_num = 20      # number of source domains
+        self.d_sour_num = 40      # number of source domains
         self.d_targ_num = 1       # number of target domain
         self.train_num = 200     # number of training point in each domain
         self.test_num = 100

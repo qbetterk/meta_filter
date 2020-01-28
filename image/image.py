@@ -7,6 +7,7 @@ import numpy as np
 import pickle as pkl
 import pdb
 from collections import defaultdict
+from PIL import Image
 
 import torch
 import torch.nn as nn
@@ -14,49 +15,52 @@ import torch.optim as optim
 import torch.nn.functional as F
 from torch.autograd import Variable
 from torchvision.transforms import transforms
+from torch.utils.data import DataLoader
 
 from config import global_config as cfg
 
+from MiniImagenet import MiniImagenet
+from meta import Meta
+from filter import Filter
 
 class conv4(nn.Module):
     def __init__(self):
         super(conv4, self).__init__()
         self.conv1 = nn.Conv2d(3, 64, 3)
+        self.conv1_bn = nn.BatchNorm2d(64)
         self.conv2 = nn.Conv2d(64, 64, 3)
+        self.conv2_bn = nn.BatchNorm2d(64)
         self.conv3 = nn.Conv2d(64, 64, 3)
+        self.conv3_bn = nn.BatchNorm2d(64)
         self.conv4 = nn.Conv2d(64, 64, 3)
+        self.conv4_bn = nn.BatchNorm2d(64)
         self.linear = nn.Linear(64 * 5 * 5, 5)
 
     def forward(self, input_image):
-        x = F.max_pool2d(F.batch_norm(F.relu(self.conv1(input_image))), 2, 2, 0)
-        x = F.max_pool2d(F.batch_norm(F.relu(self.conv2(x))), 2, 2, 0)
-        x = F.max_pool2d(F.batch_norm(F.relu(self.conv3(x))), 2, 2, 0)
-        x = F.max_pool2d(F.batch_norm(F.relu(self.conv4(x))), 2, 1, 0)
+        x = F.max_pool2d(self.conv1_bn(F.relu(self.conv1(input_image))), 2, 2, 0)
+        x = F.max_pool2d(self.conv2_bn(F.relu(self.conv2(x))), 2, 2, 0)
+        x = F.max_pool2d(self.conv3_bn(F.relu(self.conv3(x))), 2, 2, 0)
+        x = F.max_pool2d(self.conv4_bn(F.relu(self.conv4(x))), 2, 1, 0)
         x = x.view(x.size(0), -1)
         return x
 
 class read_data():
     def __init__(self, mode='test', batchsz=100, resize=84, startidx=0):
-        self.train = {}
-        self.val = {}
-        self.test = {}
         self.csv_dir = "./data/"
         self.mode = mode
 
         self.batchsz = batchsz  # batch of set, not batch of imgs
         self.n_way = cfg.n_way  # n-way
-        self.k_shot = cfg.support_num  # k-shot
-        self.k_query = cfg.test_num  # for evaluation
+        self.k_shot = cfg.k_spt  # k-shot
+        self.k_query = cfg.k_qry  # for evaluation
         self.setsz = self.n_way * self.k_shot  # num of samples per set
         self.querysz = self.n_way * self.k_query  # number of samples per set for evaluation
         self.resize = resize  # resize to
         self.startidx = startidx  # index label not from 0, but from startidx
-        # print('shuffle DB :%s, b:%d, %d-way, %d-shot, %d-query, resize:%d' % (
-        # mode, batchsz, n_way, k_shot, k_query, resize))
 
 
-        self.image_dir = os.path.join(self.csv_dir, 'images')  # image path
-        csvdata = self.loadCSV(os.path.join(self.csv_dir, mode + '.csv'))  # csv path
+        self.path = os.path.join(self.csv_dir, 'images')  # image path
+        csvdata = self.loadCSV(os.path.join(self.csv_dir, self.mode + '.csv'))  # csv path
         self.data = []
         self.img2label = {}
         for i, (k, v) in enumerate(csvdata.items()):
@@ -70,7 +74,6 @@ class read_data():
                                              transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
                                              ])
         self.create_batch(self.batchsz)
-
 
     def loadCSV(self, csvf):
         """
@@ -139,18 +142,17 @@ class read_data():
         # [querysz]
         query_y = np.zeros((self.querysz), dtype=np.int)
 
-        flatten_support_x = [os.path.join(self.image_dir, item)
+        flatten_support_x = [os.path.join(self.path, item)
                              for sublist in self.support_x_batch[index] for item in sublist]
         support_y = np.array(
             [self.img2label[item[:9]]  # filename:n0153282900000005.jpg, the first 9 characters treated as label
              for sublist in self.support_x_batch[index] for item in sublist]).astype(np.int32)
 
-        flatten_query_x = [os.path.join(self.image_dir, item)
+        flatten_query_x = [os.path.join(self.path, item)
                            for sublist in self.query_x_batch[index] for item in sublist]
         query_y = np.array([self.img2label[item[:9]]
                             for sublist in self.query_x_batch[index] for item in sublist]).astype(np.int32)
 
-        # print('global:', support_y, query_y)
         # support_y: [setsz]
         # query_y: [querysz]
         # unique: [n-way], sorted
@@ -175,6 +177,10 @@ class read_data():
 
         return support_x, torch.LongTensor(support_y_relative), query_x, torch.LongTensor(query_y_relative)
 
+    def __len__(self):
+        # as we have built up to batchsz of sets, you can sample some small batch size of sets.
+        return self.batchsz
+
     def lab2img(self, mode):
         """
         return: {label: [img1, img2, ...]}
@@ -190,41 +196,160 @@ class read_data():
 
 
 
-class Unknown():
+class Model():
     def __init__(self):
-        self.lr = cfg.lr
-        self.meta_lr = cfg.meta_lr
-        self.filter_lr = cfg.filter_lr
-        self.epoch_num = cfg.epoch_num
-        self.val_period = cfg.val_period
-        self.batch_size = cfg.batch_size
-        self.sample_num = cfg.sample_num
-        self.sample_num_val = cfg.sample_num_val
-        self.domain_num = cfg.domain_num
 
-        self.n_way = 5
-        self.support_num = cfg.support_num
-        self.model = conv4()
-        if torch.cuda.is_available():
-            self.model.cuda()
-
-        self.creiterion = nn.MSELoss()
-        # self.optimizer = optim.SGD(self.model.parameters(), lr=self.lr, momentum = 0.9)
-        self.optimizer = optim.Adam(self.model.parameters(), lr=self.lr)
-        self.meta_optimizer = optim.Adam(self.model.parameters(), lr=self.meta_lr)
-
-        self.resize = 84
+        self.n_way = cfg.n_way
+        # self.net = conv4()
+        # if torch.cuda.is_available():
+        #     self.net.cuda()
+        self.device = torch.device('cuda:'+ str(cfg.cuda_device))
 
         self.data = read_data()
 
+        self.config = [
+            ('conv2d', [32, 3, 3, 3, 1, 0]),
+            ('relu', [True]),
+            ('bn', [32]),
+            ('max_pool2d', [2, 2, 0]),
+            ('conv2d', [32, 32, 3, 3, 1, 0]),
+            ('relu', [True]),
+            ('bn', [32]),
+            ('max_pool2d', [2, 2, 0]),
+            ('conv2d', [32, 32, 3, 3, 1, 0]),
+            ('relu', [True]),
+            ('bn', [32]),
+            ('max_pool2d', [2, 2, 0]),
+            ('conv2d', [32, 32, 3, 3, 1, 0]),
+            ('relu', [True]),
+            ('bn', [32]),
+            ('max_pool2d', [2, 1, 0]),
+            ('flatten', []),
+            ('linear', [cfg.n_way, 32 * 5 * 5])
+        ]
+
+        if cfg.alg == 'maml':
+            self.net = Meta(self.config).to(self.device)
+        elif cfg.alg == 'filter':
+            self.net = Filter(self.config).to(self.device)
+
+    def count_params(self):
+        module_parameters = filter(lambda p: p.requires_grad, self.net.parameters())
+        param_cnt = int(sum([np.prod(p.size()) for p in module_parameters]))
+        print('total trainable params: %d' % param_cnt)
+        return param_cnt
+
+    def train_maml(self):
+
+        self.test_data = read_data(mode='test', batchsz=100)
+
+        for epoch in range(100):
+            # self.train_data = read_data(mode='train', batchsz=100)
+            # # fetch meta_batchsz num of episode each time
+            # print('epoch ' + str(epoch) + ' starting ... ')
+            # db = DataLoader(self.train_data, self.n_way, shuffle=True, num_workers=1, pin_memory=True)
+
+            # for step, (x_spt, y_spt, x_qry, y_qry) in enumerate(db):
+
+            #     x_spt, y_spt, x_qry, y_qry = x_spt.to(self.device),\
+            #                                  y_spt.to(self.device),\
+            #                                  x_qry.to(self.device),\
+            #                                  y_qry.to(self.device)
+            #     # pdb.set_trace()
+            #     accs = self.net(x_spt, y_spt, x_qry, y_qry)
+
+            #     if step % 20 == 0:
+            #         print('step:', step, '\ttraining acc:', accs)
+            # print('step:', step, '\ttraining acc:', accs)
+
+            db_test = DataLoader(self.test_data, 1, shuffle=True, num_workers=1, pin_memory=True)
+            accs_all_test = []
+
+            for step, (x_spt, y_spt, x_qry, y_qry) in enumerate(db_test):
+                x_spt, y_spt, x_qry, y_qry = x_spt.squeeze(0).to(self.device), \
+                                             y_spt.squeeze(0).to(self.device), \
+                                             x_qry.squeeze(0).to(self.device), \
+                                             y_qry.squeeze(0).to(self.device)
+                # if len(x_spt.shape) != 4:
+                #     print(len(x_spt.shape))
+                #     pdb.set_trace()
+                accs = self.net.finetunning(x_spt, y_spt, x_qry, y_qry)
+                accs_all_test.append(accs)
+
+            # [b, update_step+1]
+            accs = np.array(accs_all_test).mean(axis=0).astype(np.float16)
+            print('At step:', step, 'Test acc:', accs)
+
+
+def parse_arg_cfg(args):
+    if args.cfg:
+        for pair in args.cfg:
+            k, v = tuple(pair.split('='))
+            dtype = type(getattr(cfg, k))
+            if dtype == type(None):
+                raise ValueError()
+            if dtype is bool:
+                v = False if v == 'False' else True
+            elif dtype is list:
+                v = v.split(',')
+                if k=='cuda_device':
+                    v = [int(no) for no in v]
+            else:
+                v = dtype(v)
+            setattr(cfg, k, v)
+    return
+
 def main():
-    model = Unknown()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--mode', default='train_maml')
+    parser.add_argument('--cfg', nargs='*')
+    args = parser.parse_args()
 
+    if '_' in args.mode:
+        cfg.mode = args.mode.split('_')[0]
+        cfg.alg  = args.mode.split('_')[-1]
+    else:
+        cfg.mode = args.mode
 
+    parse_arg_cfg(args)
 
+    if not os.path.exists('./experiments'):
+        os.mkdir('./experiments')
 
+    if cfg.model_dir == '':
+        cfg.model_dir = 'experiments/{}_sd{}_lr{}_mlr{}_flr{}/'.format(cfg.alg,
+                         cfg.seed, cfg.lr, cfg.meta_lr, cfg.filter_lr)
 
+    if cfg.mode == 'train':
+        if not os.path.exists(cfg.model_dir):
+            os.mkdir(cfg.model_dir)
+        cfg.model_path = os.path.join(cfg.model_dir, 'model.pkl')
+        cfg.filter_path = os.path.join(cfg.model_dir, 'model_filter.pkl')
 
+    elif cfg.mode == 'test' or cfg.mode=='adjust':
+        cfg_load = json.loads(open(os.path.join(cfg.model_dir, 'config.json'), 'r').read())
+        for k, v in cfg_load.items():
+            if k in dir(cfg):
+                continue
+            setattr(cfg, k, v)
+
+    cfg._init_logging_handler(log_dir = cfg.model_dir)
+
+    if cfg.cuda:
+        torch.cuda.set_device(cfg.cuda_device)
+        logging.info('Device: {}'.format(torch.cuda.current_device()))
+
+    random.seed(cfg.seed)
+    np.random.seed(cfg.seed)
+    torch.manual_seed(cfg.seed)
+    torch.cuda.manual_seed(cfg.seed)
+
+    model = Model()
+
+    cfg.model_parameters = model.count_params()
+    logging.info(str(cfg))
+
+    model.train_maml()
 
 
 
