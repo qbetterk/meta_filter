@@ -13,7 +13,7 @@ class _Config():
         self.meta_lr = 0.01
         self.filter_lr = 0.01
 
-
+        self.hid_size = 40
         self.epoch_num = 50001
         self.val_period = 500
         self.batch_size = 32
@@ -34,7 +34,10 @@ class _Config():
         # self.filter_path = ''
 
         self.cuda = True
-        self.cuda_device = 2
+        self.cuda_device = 0
+        self.restart_all = True
+        self.clip = 1
+        self.optim = 'sgd'
 
         # # # params to generate data points
         self.d_sour_num = 40      # number of source domains
