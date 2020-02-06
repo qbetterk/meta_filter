@@ -9,18 +9,18 @@ class _Config():
     def reg_init(self):
 
         self.seed = 0
-        self.lr = 0.01
-        self.meta_lr = 0.01
-        self.filter_lr = 0.01
+        self.lr = 0.05
+        self.meta_lr = 0.005
+        self.filter_lr = 0.005
 
         self.hid_size = 40
         self.epoch_num = 50001
-        self.val_period = 500
+        self.val_period = 200
         self.batch_size = 32
         self.sample_num = 3
         self.sample_num_maml = 3
         self.sample_num_val = 100
-        self.domain_num = 30
+        self.domain_num = 64
 
         self.pre_val_loss = 0
         self.min_val_loss = 1 << 30
@@ -36,11 +36,13 @@ class _Config():
         self.cuda = True
         self.cuda_device = 0
         self.restart_all = True
-        self.clip = 1
+        self.train_update_step = 1
+        self.test_update_step = 500
+        self.clip = 3
         self.optim = 'sgd'
 
         # # # params to generate data points
-        self.d_sour_num = 40      # number of source domains
+        self.d_sour_num = 100      # number of source domains
         self.d_targ_num = 1       # number of target domain
         self.train_num = 200     # number of training point in each domain
         self.test_num = 100

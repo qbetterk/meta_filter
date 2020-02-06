@@ -109,7 +109,7 @@ class reg_net(nn.Module):
         super(reg_net, self).__init__()
         self.input_size = input_size
         self.output_size = output_size
-        self.hid_size = [40, 40]
+        self.hid_size = [cfg.hid_size, cfg.hid_size]
 
         self.linear1  = nn.Linear(self.input_size, self.hid_size[0])
         self.linear2  = nn.Linear(self.hid_size[0], self.hid_size[1])
@@ -200,6 +200,8 @@ class Regression():
         self.filter_path = cfg.filter_path
 
         self.max_adapt_num = cfg.max_adapt_num
+        self.train_update_step = cfg.train_update_step
+        self.test_update_step = cfg.test_update_step
 
         self.generate_data()
 
@@ -449,7 +451,7 @@ class Regression():
                 val_losses = torch.stack(val_loss_tasks).sum(0) / cfg.d_sour_num
                 self.model.load_state_dict(val_init_state)
 
-                logging.info('epoch {}, meta loss {:f}, validation loss {:f}, total time: {:.1f}min'.format(epoch, 
+                logging.info('alg: {}, epoch {}, meta loss {:f}, validation loss {:f}, total time: {:.1f}min'.format(cfg.alg, epoch, 
                                                             meta_loss.item(), val_losses.item(), (time.time()-self.sw)/60))
 
                 # # save the model with the lowest validation loss
@@ -509,16 +511,15 @@ class Regression():
                     # # record loss for diff domains with normalization
                     loss_tasks.append(loss)
 
-                    del grad, fast_weights
 
-                # self.model.load_state_dict(init_state)
-                self.meta_optimizer.zero_grad()
-                meta_loss = torch.stack(loss_tasks).sum(0) / self.domain_num
-                meta_loss.backward()
-                self.meta_optimizer.step()
+                    # self.model.load_state_dict(init_state)
+                    self.meta_optimizer.zero_grad()
+                    meta_loss = loss / self.domain_num
+                    meta_loss.backward()
+                    self.meta_optimizer.step()
 
-                if math.isnan(meta_loss.item()):
-                    pdb.set_trace()
+                    if math.isnan(meta_loss.item()):
+                        pdb.set_trace()
 
             ######################### validation ############################
             if epoch % self.val_period == 0:
@@ -534,9 +535,6 @@ class Regression():
                     val_loss = self.creiterion(val_outputs, val_labels)
                     grad = torch.autograd.grad(val_loss, self.model.parameters())
                     fast_weights = list(map(lambda p: p[1] - self.lr * p[0], zip(grad, self.model.parameters())))
-
-                    # val_loss.backward()
-                    # self.optimizer.step()
 
                     # # compute the loss of tmp-updated model
                     val_outputs = self.model(val_inputs, fast_weights)
@@ -712,9 +710,17 @@ class Regression():
 
         #################### initialize the filter ###########################
         self.filter = reg_net()
+        if cfg.clip:
+            self.clip_filter_(self.filter.parameters())
         if torch.cuda.is_available():
             self.filter.cuda()
-        filter_optimizer = optim.Adam(self.filter.parameters(), lr=self.filter_lr)
+        if cfg.optim == 'adam':
+            filter_optimizer = optim.Adam(self.filter.parameters(), lr=self.filter_lr)
+        elif cfg.optim == 'sgd':
+            filter_optimizer = optim.SGD(self.filter.parameters(), lr=self.filter_lr)
+        elif cfg.optim == 'sgd2':
+            filter_optimizer = optim.SGD(self.filter.parameters(), lr=self.filter_lr, momentum=0.9)
+
 
         ######################### train ###############################
         for epoch in range(self.epoch_num):
@@ -740,57 +746,99 @@ class Regression():
                     labels_val = numpy_to_var(0, self.batch_size, domain=dom, y=self.train_y[:, sample_idx_val], \
                                           last_batch=True)
 
-                    if cfg.alg == 'filter':
-                        self.model.load_state_dict(init_state)
-                        optimizer.zero_grad()
-                        outputs = self.model(inputs)
-                        loss = self.creiterion(outputs, labels)
-                        loss.backward(retain_graph=True)
+                    if self.train_update_step == 1:
+                        if cfg.alg == 'filter':
+                            self.model.load_state_dict(init_state)
+                            optimizer.zero_grad()
+                            outputs = self.model(inputs)
+                            loss = self.creiterion(outputs, labels)
+                            loss.backward(retain_graph=True)
 
-                        params_gen = [p.grad.data for p in self.model.parameters()]
-                        # # apply filter to gradient
-                        for p, q in zip(self.model.parameters(), self.filter.parameters()):
-                            p.grad.data = p.grad.data * q.data
-                        optimizer.step()
+                            params_gen = [p.grad.data for p in self.model.parameters()]
+                            # # apply filter to gradient
+                            for p, q in zip(self.model.parameters(), self.filter.parameters()):
+                                p.grad.data = p.grad.data * q.data
+                            optimizer.step()
 
-                        optimizer.zero_grad()
-                        outputs = self.model(inputs_val)
-                        loss = self.creiterion(outputs, labels_val)
-                        # # record with normalization
-                        loss_tasks.append(loss)
-                        loss.backward(retain_graph=True)
-                        params_spe = [p.grad.data for p in self.model.parameters()]
+                            optimizer.zero_grad()
+                            outputs = self.model(inputs_val)
+                            loss = self.creiterion(outputs, labels_val)
+                            # # record with normalization
+                            loss_tasks.append(loss)
+                            loss.backward(retain_graph=True)
+                            params_spe = [p.grad.data for p in self.model.parameters()]
+
+                        elif cfg.alg == 'filter2':
+                            outputs = self.model(inputs)
+                            loss = self.creiterion(outputs, labels)
+                            grad = torch.autograd.grad(loss, self.model.parameters())
+                            fast_weights = list(map(lambda p: p[1] - self.lr * p[0] * p[2], 
+                                                    zip(grad, self.model.parameters(), self.filter.parameters())))
+
+                            params_gen = [p.data for p in grad]
+                            # # # apply filter to gradient
+                            outputs = self.model(inputs_val, fast_weights)
+                            loss = self.creiterion(outputs, labels_val)
+                            # # record with normalization
+                            loss_tasks.append(loss)
+                            grad = torch.autograd.grad(loss, fast_weights, retain_graph=True)
+                            params_spe = [p.data for p in grad]
 
 
-                    elif cfg.alg == 'filter2':
+                        # # update filter
+                        if cfg.clip == 0:
+                            clip_grad = [1 for idx in range(len(params_gen))]
+                        elif cfg.clip == 1:
+                            clip_grad = [p.data * (1 - p.data) for p in self.filter.parameters()]
+                        elif cfg.clip == 2:
+                            clip_grad = [0 for idx in range(len(params_gen))]
+                        elif cfg.clip == 3:
+                            clip_grad = copy.deepcopy(list(self.filter.parameters()))
+                            for p in clip_grad:
+                                p.data[p.data == 1] = 0
+                                p.data = (p.data != 0).float()
+
+                        if len(filter_grad) == 0:
+                            filter_grad = [- j * k * p.data for j, k, p in zip(params_gen, params_spe, clip_grad)]
+                        elif len(filter_grad) == len(params_gen):
+                            filter_grad = [i - j * k * p.data for i, j, k, p in zip(filter_grad, params_gen, params_spe, clip_grad)]
+                        else:
+                            raise ValueError("Invalid filter gradient: dimension mismatch")
+
+                    else:
                         outputs = self.model(inputs)
                         loss = self.creiterion(outputs, labels)
                         grad = torch.autograd.grad(loss, self.model.parameters())
-                        fast_weights = list(map(lambda p: p[1] - self.lr * p[0] * p[2], 
-                                                zip(grad, self.model.parameters(), self.filter.parameters())))
+                        # \frac{\partial \theta_k}{\partial F}
+                        grad_theta_F = None
+                        # \frac{\partial loss}{\partial F}
+                        grad_loss_F = None
 
-                        params_gen = [p.data for p in grad]
-                        # # # apply filter to gradient
-                        outputs = self.model(inputs_val, fast_weights)
-                        loss = self.creiterion(outputs, labels_val)
-                        # # record with normalization
+                        for idx in range(self.train_update_step):
+
+                            fast_weights = list(map(lambda p: p[1] - self.lr * p[0] * p[2], 
+                                                    zip(grad, self.model.parameters(), self.filter.parameters())))
+                            outputs = self.model(inputs_val, fast_weights)
+                            loss = self.creiterion(outputs, labels_val)
+
+                            if grad_theta_F is None:
+                                grad_theta_F = [-1 * j * p.data * (1 - p.data) for j, p in zip(grad, self.filter.parameters())]
+                            else: 
+                                grad_theta_F = [i - j * p.data * (1 - p.data) - p.data * k for i, j, k, p in \
+                                                                                    zip(grad_theta_F, grad, grad_loss_F, self.filter.parameters())]                            
+                            grad = torch.autograd.grad(loss, fast_weights, retain_graph=True)
+                            grad_loss_F = [i * j for i, j in zip(grad, grad_theta_F)]
+
                         loss_tasks.append(loss)
-                        grad = torch.autograd.grad(loss, fast_weights, retain_graph=True)
-                        params_spe = [p.data for p in grad]
-
-
-                    # # update filter
-                    if len(filter_grad) == 0:
-                        filter_grad = [- j * k for j, k in zip(params_gen, params_spe)]
-                    elif len(filter_grad) == len(params_gen):
-                        filter_grad = [i - j * k for i, j, k in zip(filter_grad, params_gen, params_spe)]
-                    else:
-                        raise ValueError("Invalid filter gradient: dimension mismatch")
+                        filter_grad = [i + j for i, j in zip(filter_grad, grad_loss_F)]
 
                 filter_optimizer.zero_grad()
                 for i, j in zip(self.filter.parameters(), filter_grad):
                     i.grad = copy.deepcopy(j)
                 filter_optimizer.step()
+
+                if cfg.clip:
+                    self.clip_filter_(self.filter.parameters())
 
                 # # update meta 
                 self.model.load_state_dict(init_state)
@@ -831,6 +879,22 @@ class Regression():
                         # # compute the loss of tmp-updated model
                         val_outputs = self.model(val_inputs, fast_weights)
                         val_loss = self.creiterion(val_outputs, val_labels)
+
+                    elif cfg.alg == 'filter22':
+                        val_outputs = self.model(val_inputs)
+                        val_loss = self.creiterion(val_outputs, val_labels)
+                        grad = torch.autograd.grad(val_loss, self.model.parameters())
+
+                        for i in range(self.train_update_step):
+
+                            fast_weights = list(map(lambda p: p[1] - self.lr * p[0] * p[2], 
+                                                    zip(grad, self.model.parameters(), self.filter.parameters())))
+
+                            # # compute the loss of tmp-updated model
+                            val_outputs = self.model(val_inputs, fast_weights)
+                            val_loss = self.creiterion(val_outputs, val_labels)
+                            grad = torch.autograd.grad(val_loss, fast_weights)
+
 
                     # # record loss for diff domains
                     val_loss_tasks.append(val_loss)
@@ -861,9 +925,17 @@ class Regression():
 
         #################### initialize the filter ###########################
         self.filter = reg_net()
+        if cfg.clip:
+            self.clip_filter_(self.filter.parameters())
         if torch.cuda.is_available():
             self.filter.cuda()
-        filter_optimizer = optim.Adam(self.filter.parameters(), lr=self.filter_lr)
+        if cfg.optim == 'adam':
+            filter_optimizer = optim.Adam(self.filter.parameters(), lr=self.filter_lr)
+        elif cfg.optim == 'sgd':
+            filter_optimizer = optim.SGD(self.filter.parameters(), lr=self.filter_lr)
+        elif cfg.optim == 'sgd2':
+            filter_optimizer = optim.SGD(self.filter.parameters(), lr=self.filter_lr, momentum=0.9)
+
 
         ######################### train ###############################
         for epoch in range(self.epoch_num):
@@ -875,84 +947,66 @@ class Regression():
             for batch_idx in range(math.ceil(self.sample_num / self.batch_size)):
                 inputs = numpy_to_var(batch_idx, self.batch_size, x = self.train_x[sample_idx], \
                                         last_batch = (batch_idx == int(self.sample_num / self.batch_size)))
-                inputs_val = numpy_to_var(batch_idx, self.batch_size, x = self.train_x[sample_idx_val], \
-                                        last_batch = (batch_idx == int(self.sample_num / self.batch_size)))
+                inputs_val = numpy_to_var(0, self.batch_size, x = self.train_x[sample_idx_val], \
+                                        last_batch = True)
 
-                # init_state = copy.deepcopy(self.model.state_dict())
                 domain_idx = random.choices(range(cfg.d_sour_num), k = self.domain_num)
                 loss_tasks = []
-                filter_grad = []
 
                 for dom in domain_idx:
                     labels = numpy_to_var(batch_idx, self.batch_size, domain=dom, y=self.train_y[:, sample_idx], \
                                           last_batch=(batch_idx == int(self.sample_num / self.batch_size)))
-                    labels_val = numpy_to_var(batch_idx, self.batch_size, domain=dom, y=self.train_y[:, sample_idx_val], \
-                                          last_batch=(batch_idx == int(self.sample_num / self.batch_size)))
+                    labels_val = numpy_to_var(0, self.batch_size, domain=dom, y=self.train_y[:, sample_idx_val], \
+                                          last_batch=True)
 
-                    # self.model.load_state_dict(init_state)
-                    # optimizer.zero_grad()
                     outputs = self.model(inputs)
                     loss = self.creiterion(outputs, labels)
                     grad = torch.autograd.grad(loss, self.model.parameters())
                     fast_weights = list(map(lambda p: p[1] - self.lr * p[0] * p[2], 
                                             zip(grad, self.model.parameters(), self.filter.parameters())))
 
-
                     params_gen = [p.data for p in grad]
                     # # # apply filter to gradient
-
-                    # optimizer.zero_grad()
                     outputs = self.model(inputs_val, fast_weights)
                     loss = self.creiterion(outputs, labels_val)
                     # # record with normalization
                     loss_tasks.append(loss)
-                    # loss.backward(retain_graph=True)
                     grad = torch.autograd.grad(loss, fast_weights, retain_graph=True)
                     params_spe = [p.data for p in grad]
 
-                    # # update filter
-                    if len(filter_grad) == 0:
-                        filter_grad = [- j * k for j, k in zip(params_gen, params_spe)]
-                    elif len(filter_grad) == len(params_gen):
-                        filter_grad = [i - j * k for i, j, k in zip(filter_grad, params_gen, params_spe)]
-                    else:
-                        raise ValueError("Invalid filter gradient: dimension mismatch")
+                    with torch.no_grad():
+                        if cfg.clip:
+                            filter_grad = [- j * k * p.data * (1 - p.data) for j, k, p in \
+                                                            zip(params_gen, params_spe, self.filter.parameters())]
+                        else:
+                            filter_grad = [- j * k for j, k in zip(params_gen, params_spe)]
 
-                    del params_gen, params_spe, grad, fast_weights
+                    filter_optimizer.zero_grad()
+                    for i, j in zip(self.filter.parameters(), filter_grad):
+                        i.grad = copy.deepcopy(j)
+                    filter_optimizer.step()
+                    
+                    if cfg.clip:
+                        self.clip_filter_(self.filter.parameters())
 
-                filter_optimizer.zero_grad()
-                for i, j in zip(self.filter.parameters(), filter_grad):
-                    i.grad = copy.deepcopy(j)
-                filter_optimizer.step()
-
-                # # update meta 
-                # self.model.load_state_dict(init_state)
-                meta_optimizer.zero_grad()
-                meta_loss = torch.stack(loss_tasks).sum(0) / self.domain_num
-                meta_loss.backward()
-                meta_optimizer.step()
+                    # # update meta
+                    meta_optimizer.zero_grad()
+                    meta_loss = loss / self.domain_num
+                    meta_loss.backward()
+                    meta_optimizer.step()
 
             ######################### validation ############################
             if epoch % self.val_period == 0:
-                # val_init_state = copy.deepcopy(self.model.state_dict())
+                val_init_state = copy.deepcopy(self.model.state_dict())
                 val_loss_tasks = []
                 for dom in domain_idx:
                     val_inputs, val_labels = numpy_to_var(0, self.batch_size, x=self.val_x, y=self.val_y, domain=dom)
 
-                    # # tmp-updated model for each domain
-                    # self.model.load_state_dict(val_init_state)
-                    optimizer.zero_grad()
                     val_outputs = self.model(val_inputs)
                     val_loss = self.creiterion(val_outputs, val_labels)
                     grad = torch.autograd.grad(val_loss, self.model.parameters())
                     fast_weights = list(map(lambda p: p[1] - self.lr * p[0] * p[2], 
                                             zip(grad, self.model.parameters(), self.filter.parameters())))
-
-
-                    # # val_loss.backward()
-                    # for p, q in zip(self.model.parameters(), self.filter.parameters()):
-                    #     p.grad.data = p.grad.data * q.data
-                    # optimizer.step()
 
                     # # compute the loss of tmp-updated model
                     val_outputs = self.model(val_inputs, fast_weights)
@@ -962,7 +1016,7 @@ class Regression():
                     val_loss_tasks.append(val_loss)
 
                 val_losses = torch.stack(val_loss_tasks).sum(0) / cfg.d_sour_num
-                # self.model.load_state_dict(val_init_state)
+                self.model.load_state_dict(val_init_state)
 
                 logging.info('epoch {}, meta loss {:f}, validation loss {:f}, total time: {:.1f}min'.format(epoch, 
                                                             meta_loss.item(), val_losses.item(), (time.time()-self.sw)/60))
@@ -982,14 +1036,15 @@ class Regression():
                     return
 
     def train_filter3(self):
-
-        cfg.alg = 'maml'
-        cfg.sample_num_maml = 100
-        logging.info('start training initialization with maml ...')
-        logging.info('alg: {}, sample_num_maml: {}'.format(cfg.alg, cfg.sample_num_maml))
-        self.train_maml()
-        os.rename(self.model_path, self.model_path.split('.pkl')[0] + '_maml.pkl')
-
+        self.maml_model_path = self.model_path.split('.pkl')[0] + '_maml.pkl'
+        if cfg.restart_all or not os.path.exists(self.maml_model_path):
+            cfg.alg = 'maml'
+            cfg.sample_num_maml = 100
+            logging.info('start training initialization with maml ...')
+            logging.info('alg: {}, sample_num_maml: {}'.format(cfg.alg, cfg.sample_num_maml))
+            self.train_maml()
+            os.rename(self.model_path, self.maml_model_path)
+        self.model.load_state_dict(torch.load(self.maml_model_path))
 
         cfg.alg = 'filter'
         converge_step_left = self.ear_stop_num
@@ -997,9 +1052,162 @@ class Regression():
 
         #################### initialize the filter ###########################
         self.filter = reg_net()
+        if cfg.clip:
+            self.clip_filter_(self.filter.parameters())
         if torch.cuda.is_available():
             self.filter.cuda()
         filter_optimizer = optim.Adam(self.filter.parameters(), lr=self.filter_lr)
+
+        ######################### train filter ###############################
+        for epoch in range(self.epoch_num):
+            optimizer = self.optimizer
+            meta_optimizer = self.meta_optimizer
+            sample_idx = np.random.choice(cfg.train_num, self.sample_num)
+            sample_idx_val = np.random.choice(cfg.train_num, self.sample_num_val)
+
+            for batch_idx in range(math.ceil(self.sample_num / self.batch_size)):
+                inputs = numpy_to_var(batch_idx, self.batch_size, x = self.train_x[sample_idx], \
+                                        last_batch = (batch_idx == int(self.sample_num / self.batch_size)))
+                inputs_val = numpy_to_var(0, self.batch_size, x = self.train_x[sample_idx_val], \
+                                        last_batch = True)
+
+                init_state = copy.deepcopy(self.model.state_dict())
+                domain_idx = random.choices(range(cfg.d_sour_num), k = self.domain_num)
+                loss_tasks = []
+                filter_grad = []
+
+                for dom in domain_idx:
+                    labels = numpy_to_var(batch_idx, self.batch_size, domain=dom, y=self.train_y[:, sample_idx], \
+                                          last_batch=(batch_idx == int(self.sample_num / self.batch_size)))
+                    labels_val = numpy_to_var(0, self.batch_size, domain=dom, y=self.train_y[:, sample_idx_val], \
+                                          last_batch=True)
+
+                    if cfg.alg == 'filter':
+                        self.model.load_state_dict(init_state)
+                        optimizer.zero_grad()
+                        outputs = self.model(inputs)
+                        loss = self.creiterion(outputs, labels)
+                        loss.backward(retain_graph=True)
+
+                        params_gen = [p.grad.data for p in self.model.parameters()]
+                        # # apply filter to gradient
+                        for p, q in zip(self.model.parameters(), self.filter.parameters()):
+                            p.grad.data = p.grad.data * q.data
+                        optimizer.step()
+
+                        optimizer.zero_grad()
+                        outputs = self.model(inputs_val)
+                        loss = self.creiterion(outputs, labels_val)
+                        # # record with normalization
+                        loss_tasks.append(loss)
+                        loss.backward(retain_graph=True)
+                        params_spe = [p.grad.data for p in self.model.parameters()]
+
+
+                    elif cfg.alg == 'filter2':
+                        outputs = self.model(inputs)
+                        loss = self.creiterion(outputs, labels)
+                        grad = torch.autograd.grad(loss, self.model.parameters())
+                        fast_weights = list(map(lambda p: p[1] - self.lr * p[0] * p[2], 
+                                                zip(grad, self.model.parameters(), self.filter.parameters())))
+
+                        params_gen = [p.data for p in grad]
+                        # # # apply filter to gradient
+                        outputs = self.model(inputs_val, fast_weights)
+                        loss = self.creiterion(outputs, labels_val)
+                        # # record with normalization
+                        loss_tasks.append(loss)
+                        grad = torch.autograd.grad(loss, fast_weights, retain_graph=True)
+                        params_spe = [p.data for p in grad]
+
+                    with torch.no_grad():
+                        if cfg.clip:
+                            # # update filter
+                            if len(filter_grad) == 0:
+                                filter_grad = [- j * k * p.data * (1 - p.data) for j, k, p in zip(params_gen, params_spe, self.filter.parameters())]
+                            elif len(filter_grad) == len(params_gen):
+                                filter_grad = [i - j * k * p.data * (1 - p.data) for i, j, k, p in zip(filter_grad, params_gen, params_spe, self.filter.parameters())]
+                            else:
+                                raise ValueError("Invalid filter gradient: dimension mismatch")
+                        else:
+                            # # update filter
+                            if len(filter_grad) == 0:
+                                filter_grad = [- j * k for j, k in zip(params_gen, params_spe)]
+                            elif len(filter_grad) == len(params_gen):
+                                filter_grad = [i - j * k for i, j, k in zip(filter_grad, params_gen, params_spe)]
+                            else:
+                                raise ValueError("Invalid filter gradient: dimension mismatch")
+
+                filter_optimizer.zero_grad()
+                for i, j in zip(self.filter.parameters(), filter_grad):
+                    i.grad = copy.deepcopy(j)
+                filter_optimizer.step()
+
+                if cfg.clip:
+                    self.clip_filter_(self.filter.parameters())
+
+                # # update meta 
+                self.model.load_state_dict(init_state)
+                meta_optimizer.zero_grad()
+                meta_loss = torch.stack(loss_tasks).sum(0) / self.domain_num
+                # meta_loss.backward()
+                # meta_optimizer.step()
+
+            ######################### validation ############################
+            if epoch % self.val_period == 0:
+                val_init_state = copy.deepcopy(self.model.state_dict())
+                val_loss_tasks = []
+                for dom in domain_idx:
+                    val_inputs, val_labels = numpy_to_var(0, self.batch_size, x=self.val_x, y=self.val_y, domain=dom)
+
+                    if cfg.alg == 'filter':
+                        # # tmp-updated model for each domain
+                        self.model.load_state_dict(val_init_state)
+                        optimizer.zero_grad()
+                        val_outputs = self.model(val_inputs)
+                        val_loss = self.creiterion(val_outputs, val_labels)
+                        val_loss.backward()
+                        for p, q in zip(self.model.parameters(), self.filter.parameters()):
+                            p.grad.data = p.grad.data * q.data
+                        optimizer.step()
+
+                        # # compute the loss of tmp-updated model
+                        val_outputs = self.model(val_inputs)
+                        val_loss = self.creiterion(val_outputs, val_labels)
+
+                    elif cfg.alg == 'filter2':
+                        val_outputs = self.model(val_inputs)
+                        val_loss = self.creiterion(val_outputs, val_labels)
+                        grad = torch.autograd.grad(val_loss, self.model.parameters())
+                        fast_weights = list(map(lambda p: p[1] - self.lr * p[0] * p[2], 
+                                                zip(grad, self.model.parameters(), self.filter.parameters())))
+
+                        # # compute the loss of tmp-updated model
+                        val_outputs = self.model(val_inputs, fast_weights)
+                        val_loss = self.creiterion(val_outputs, val_labels)
+
+                    # # record loss for diff domains
+                    val_loss_tasks.append(val_loss)
+
+                val_losses = torch.stack(val_loss_tasks).sum(0) / cfg.d_sour_num
+                self.model.load_state_dict(val_init_state)
+
+                logging.info('alg:{}, epoch {}, meta loss {:f}, validation loss {:f}, total time: {:.1f}min'.format(cfg.alg, epoch, 
+                                                            meta_loss.item(), val_losses.item(), (time.time()-self.sw)/60))
+
+                # # save the model with the lowest validation loss
+                if val_losses.item() < min_val_loss:
+                    torch.save(self.model.state_dict(), self.model_path)
+                    torch.save(self.filter.state_dict(), self.filter_path)
+                    logging.info('mode saved')
+                    min_val_loss = val_losses.item()
+                    converge_step_left = self.ear_stop_num
+                else:
+                    converge_step_left -= 1
+                    logging.info('early stop countdown %d' % converge_step_left)
+
+                if converge_step_left == 0 or val_losses.item() < 1e-5:
+                    break
 
         ######################### train ###############################
         for epoch in range(self.epoch_num):
@@ -1063,19 +1271,31 @@ class Regression():
                         grad = torch.autograd.grad(loss, fast_weights, retain_graph=True)
                         params_spe = [p.data for p in grad]
 
-
-                    # # update filter
-                    if len(filter_grad) == 0:
-                        filter_grad = [- j * k for j, k in zip(params_gen, params_spe)]
-                    elif len(filter_grad) == len(params_gen):
-                        filter_grad = [i - j * k for i, j, k in zip(filter_grad, params_gen, params_spe)]
-                    else:
-                        raise ValueError("Invalid filter gradient: dimension mismatch")
+                    with torch.no_grad():
+                        if cfg.clip:
+                            # # update filter
+                            if len(filter_grad) == 0:
+                                filter_grad = [- j * k * p.data * (1 - p.data) for j, k, p in zip(params_gen, params_spe, self.filter.parameters())]
+                            elif len(filter_grad) == len(params_gen):
+                                filter_grad = [i - j * k * p.data * (1 - p.data) for i, j, k, p in zip(filter_grad, params_gen, params_spe, self.filter.parameters())]
+                            else:
+                                raise ValueError("Invalid filter gradient: dimension mismatch")
+                        else:
+                            # # update filter
+                            if len(filter_grad) == 0:
+                                filter_grad = [- j * k for j, k in zip(params_gen, params_spe)]
+                            elif len(filter_grad) == len(params_gen):
+                                filter_grad = [i - j * k for i, j, k in zip(filter_grad, params_gen, params_spe)]
+                            else:
+                                raise ValueError("Invalid filter gradient: dimension mismatch")
 
                 filter_optimizer.zero_grad()
                 for i, j in zip(self.filter.parameters(), filter_grad):
                     i.grad = copy.deepcopy(j)
                 filter_optimizer.step()
+
+                if cfg.clip:
+                    self.clip_filter_(self.filter.parameters())
 
                 # # update meta 
                 self.model.load_state_dict(init_state)
@@ -1123,7 +1343,7 @@ class Regression():
                 val_losses = torch.stack(val_loss_tasks).sum(0) / cfg.d_sour_num
                 self.model.load_state_dict(val_init_state)
 
-                logging.info('epoch {}, meta loss {:f}, validation loss {:f}, total time: {:.1f}min'.format(epoch, 
+                logging.info('alg:{}, epoch {}, meta loss {:f}, validation loss {:f}, total time: {:.1f}min'.format(cfg.alg, epoch, 
                                                             meta_loss.item(), val_losses.item(), (time.time()-self.sw)/60))
 
                 # # save the model with the lowest validation loss
@@ -1226,6 +1446,30 @@ class Regression():
         pkl.dump({'adapt': adapt_losses, 'test': test_losses}, 
                  open(os.path.join(output_sub_dir, 'test_error.pkl'), 'wb'))
 
+    def clip_filter_(self, parameters, max_norm=1):
+        """
+        in-place gradient clipping.
+        :param grad: list of gradients
+        :param max_norm: maximum norm allowable
+        :return:
+        """
+
+        if isinstance(parameters, torch.Tensor):
+            parameters = [parameters]
+        # parameters = list(filter(lambda p: p is not None, parameters))
+        max_norm = float(max_norm)
+        for p in parameters:
+            if p is not None:
+                if cfg.clip == 1:
+                    p.data = torch.sigmoid(p.data)
+                elif cfg.clip == 2:
+                    p.data = (p.data > 0).float()
+                elif cfg.clip == 3:
+                    p.data = torch.clamp(p.data, 0, 1)
+                    # p.data[p.data > 1] = 1
+                    # p.data[p.data < 0] = 0
+        return
+
 def parse_arg_cfg(args):
     if args.cfg:
         for pair in args.cfg:
@@ -1262,9 +1506,9 @@ def main():
         os.mkdir('./experiments')
 
     if cfg.model_dir == '':
-        cfg.model_dir = 'experiments/{}_sd{}_lr{}_mlr{}_flr{}_sa{}_sav{}_dn{}_sd{}_es{}_est{}/'.format(cfg.alg,
-                         cfg.seed, cfg.lr, cfg.meta_lr, cfg.filter_lr, cfg.sample_num, cfg.sample_num_val,
-                         cfg.domain_num, cfg.d_sour_num, cfg.ear_stop_num, cfg.ear_stop_num_test)
+        cfg.model_dir = 'experiments/{}_clip{}_sd{}_lr{}_mlr{}_flr{}_tus{}_sa{}_sav{}_dn{}_sd{}_es{}_est{}/'.format(cfg.alg,
+                         cfg.clip, cfg.seed, cfg.lr, cfg.meta_lr, cfg.filter_lr, cfg.train_update_step, cfg.sample_num, 
+                         cfg.sample_num_val, cfg.domain_num, cfg.d_sour_num, cfg.ear_stop_num, cfg.ear_stop_num_test)
 
     if cfg.mode == 'train':
         if not os.path.exists(cfg.model_dir):
@@ -1316,11 +1560,11 @@ def main():
         reg.test_filter()
 
 
-    if args.mode == 'train_maml3':
+    if args.mode == 'train_maml13':
         if cfg.save_log:
             with open(os.path.join(cfg.model_dir, 'config.json'), 'w') as f:
                 json.dump(cfg.__dict__, f, indent=2)
-        reg.train_maml()
+        reg.train_maml2()
         reg.test_maml()
 
     if args.mode == 'train_filter3':
@@ -1329,6 +1573,66 @@ def main():
                 json.dump(cfg.__dict__, f, indent=2)
         reg.train_filter3()
         reg.test_filter()
+
+
+    if args.mode == 'train_maml' or args.mode == 'train_maml6' or args.mode == 'train_maml3':
+        if cfg.save_log:
+            with open(os.path.join(cfg.model_dir, 'config.json'), 'w') as f:
+                json.dump(cfg.__dict__, f, indent=2)
+        cfg.alg = 'maml'
+        reg.train_maml()
+        reg.test_maml()
+
+    if args.mode == 'train_filter' or args.mode == 'train_filter6':
+        if cfg.save_log:
+            with open(os.path.join(cfg.model_dir, 'config.json'), 'w') as f:
+                json.dump(cfg.__dict__, f, indent=2)
+        cfg.alg = 'filter'
+        reg.train_filter()
+        reg.test_filter()
+
+
+    if args.mode == 'train_maml7' or args.mode == 'train_maml10' or args.mode == 'train_maml11':
+        if cfg.save_log:
+            with open(os.path.join(cfg.model_dir, 'config.json'), 'w') as f:
+                json.dump(cfg.__dict__, f, indent=2)
+        cfg.alg = 'maml2'
+        reg.train_maml()
+        reg.test_maml()
+
+    if args.mode == 'train_filter7' or args.mode == 'train_filter11' or args.mode == 'train_filter12':
+        if cfg.save_log:
+            with open(os.path.join(cfg.model_dir, 'config.json'), 'w') as f:
+                json.dump(cfg.__dict__, f, indent=2)
+        cfg.alg = 'filter2'
+        reg.train_filter()
+        reg.test_filter()
+
+    if args.mode == 'train_filter10':
+        if cfg.save_log:
+            with open(os.path.join(cfg.model_dir, 'config.json'), 'w') as f:
+                json.dump(cfg.__dict__, f, indent=2)
+        cfg.alg = 'filter2'
+        cfg.optim = 'sgd2'
+        reg.train_filter()
+        reg.test_filter()
+
+    if args.mode == 'train_filter13':
+        if cfg.save_log:
+            with open(os.path.join(cfg.model_dir, 'config.json'), 'w') as f:
+                json.dump(cfg.__dict__, f, indent=2)
+        reg.train_filter2()
+        reg.test_filter()
+
+    if args.mode == 'train_filter22':
+        if cfg.save_log:
+            with open(os.path.join(cfg.model_dir, 'config.json'), 'w') as f:
+                json.dump(cfg.__dict__, f, indent=2)
+        cfg.alg = 'filter22'
+        reg.train_filter()
+        reg.test_filter()
+
+
 
 if __name__ == "__main__":
     main()

@@ -33,20 +33,28 @@ sample_num = args.sample_num
 support_num = args.support_num
 clip = args.clip
 
-maml_pkl_path = './experiments/maml{}_clip{}_sd{}_lr{}_mlr{}_flr{}_sa{}_sav{}_dn{}_sd{}_es{}_est{}/result_pic/support_num_{}_target_dom_{}/test_error.pkl'.format(
-                args.alg, clip, seed, lr, meta_lr, filter_lr, sample_num, cfg.sample_num_val,
+maml_pkl_path = './experiments/maml{}_clip{}_sd{}_lr{}_mlr{}_flr{}_tus{}_sa{}_sav{}_dn{}_sd{}_es{}_est{}/result_pic/support_num_{}_target_dom_{}/test_error.pkl'.format(
+                args.alg, clip, seed, lr, meta_lr, filter_lr, cfg.train_update_step, sample_num, cfg.sample_num_val,
                 cfg.domain_num, cfg.d_sour_num, cfg.ear_stop_num, cfg.ear_stop_num_test,
                 support_num, cfg.d_targ_num)
 # filter_pkl_path = './experiments/filter_sd' + str(seed) + '_lr0.0001_mlr0.001_flr0.001_sa10_dn15_sd20_es5_est30/result_pic/support_num_3_target_dom_' + str(target_dom) + '/test_error.pkl'
 
-filter_pkl_path = './experiments/filter{}_clip{}_sd{}_lr{}_mlr{}_flr{}_sa{}_sav{}_dn{}_sd{}_es{}_est{}/result_pic/support_num_{}_target_dom_{}/test_error.pkl'.format(
-                args.alg, clip, seed, lr, meta_lr, filter_lr, sample_num, cfg.sample_num_val,
+if not os.path.exists(maml_pkl_path):
+
+    maml_pkl_path = './experiments/maml7_clip1_sd{}_lr{}_mlr{}_flr0.01_sa{}_sav{}_dn{}_sd{}_es{}_est{}/result_pic/support_num_{}_target_dom_{}/test_error.pkl'.format(
+                seed, lr, meta_lr, sample_num, cfg.sample_num_val,
                 cfg.domain_num, cfg.d_sour_num, cfg.ear_stop_num, cfg.ear_stop_num_test,
                 support_num, cfg.d_targ_num)
 
+
+
+filter_pkl_path = './experiments/filter{}_clip{}_sd{}_lr{}_mlr{}_flr{}_tus{}_sa{}_sav{}_dn{}_sd{}_es{}_est{}/result_pic/support_num_{}_target_dom_{}/test_error.pkl'.format(
+                args.alg, clip, seed, lr, meta_lr, filter_lr, cfg.train_update_step, sample_num, cfg.sample_num_val,
+                cfg.domain_num, cfg.d_sour_num, cfg.ear_stop_num, cfg.ear_stop_num_test,
+                support_num, cfg.d_targ_num)
 fig_name   = './result_pic/compare' + str(args.alg) + '_' + \
-             '_'.join(maml_pkl_path.split('/')[2].split('_')[1:]) + '_' + \
-             maml_pkl_path.split('/')[4] + \
+             '_'.join(filter_pkl_path.split('/')[2].split('_')[1:]) + '_' + \
+             filter_pkl_path.split('/')[4] + \
              '.png'
 
 
